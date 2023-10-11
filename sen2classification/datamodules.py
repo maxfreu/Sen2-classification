@@ -166,6 +166,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
     @property
     def num_classes(self):
         if not self.is_setup:
+            self.prepare_data()
             self.setup("fit")
             self.is_setup = True
         return self.training_data.num_classes
@@ -173,6 +174,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
     @property
     def classes(self):
         if not self.is_setup:
+            self.prepare_data()
             self.setup("fit")
             self.is_setup = True
         return self.training_data.classes
@@ -180,12 +182,16 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
     @property
     def class_weights(self):
         if not self.is_setup:
+            self.prepare_data()
             self.setup("fit")
             self.is_setup = True
         return self.training_data.compute_class_weights()
 
-    # def teardown(self, stage: str):
-    #     pass
+    def teardown(self, stage: str):
+        try:
+            os.remove(f"/tmp/{self.dbname}.sqlite")
+        except FileNotFoundError:
+            pass
 
 
 class MultiModalClassificationDataModule(L.LightningDataModule):

@@ -243,10 +243,10 @@ class SBERTClassifier(LightningModule):
             validity_mask = np.empty((h,w,seq_len,1), dtype=bool)
 
         # read all the files
-        # for (i,f) in enumerate(boa_filenames):
-        #     fname = os.path.join(input_folder, f)
-        #     img = read_img(fname, dim_ordering="HWC", dtype=np.int16)
-        #     all_boas[:,:,i,:] = img
+        for (i,f) in enumerate(boa_filenames):
+            fname = os.path.join(input_folder, f)
+            img = read_img(fname, dim_ordering="HWC", dtype=np.int16)
+            all_boas[:,:,i,:] = img
         
         if qai > 0:
             for (i,f) in enumerate(qais):

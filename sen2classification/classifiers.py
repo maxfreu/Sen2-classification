@@ -1,20 +1,25 @@
 import os
-
 import numpy as np
 import torch
+import pandas as pd
 from . import utils
 from typing import Any
 from torch import optim
+from torch.utils.data import DataLoader
 from torch.nn.functional import cross_entropy
 from pytorch_lightning import LightningModule
 from torchvision.models import resnet18, ResNet18_Weights
 from torchvision.ops import MLP
 from torchmetrics.functional import accuracy, precision, recall
-from torchmetrics import Accuracy, ConfusionMatrix
+from torchmetrics import Accuracy, ConfusionMatrix, MetricCollection
 from .sitsbert.model.classification_model import SBERT, SBERTClassification
 from plotting import plot_confusion_matrix
+from .datasets import InMemoryTimeSeriesDataset
+import datetime
+from .utils import GeneratorDataset, read_img, array_to_tif
+import rioxarray
 
-
+#%%
 class TreeClassifier(LightningModule):
     def __init__(self, num_classes: int, lr: float, loss_weights: list, use_weighted_loss: bool = False):
         super().__init__()
@@ -76,12 +81,11 @@ class TreeClassifier(LightningModule):
         return optim.Adam(params=self.parameters(), lr=self.lr)
 
 
-# TODO finish this
 class SBERTClassifier(LightningModule):
     def __init__(self,
                  num_classes: int,
                  lr: float,
-                 loss_weights: list,
+                 loss_weights: list = None,
                  use_weighted_loss: bool = False,
                  satellite_input_channels: int = 10,
                  hidden_dim: int = 256,
@@ -89,7 +93,7 @@ class SBERTClassifier(LightningModule):
                  num_attention_heads: int = 8,
                  max_embedding_size: int = 366,
                  cosine_init_period: int = 900,
-                 classes: list[str] = None  # only needed for the test step
+                 classes: "list[str]" = None  # only needed for the test step
                 ):
         super().__init__()
         self.save_hyperparameters("num_classes", "lr", "loss_weights", "satellite_input_channels", "hidden_dim",
@@ -110,8 +114,6 @@ class SBERTClassifier(LightningModule):
             self.loss_weights = torch.tensor(loss_weights)
             # self.register_buffer("loss_weights", loss_weights)
             self.loss_weights.requires_grad = False
-        else:
-            self.loss_weights = None
 
         self.sbert = SBERT(num_features=satellite_input_channels,
                            hidden=hidden_dim,
@@ -119,6 +121,10 @@ class SBERTClassifier(LightningModule):
                            attn_heads=num_attention_heads,
                            max_embedding_size=max_embedding_size)
         self.transformer = SBERTClassification(self.sbert, self.num_classes)
+
+        metric = MetricCollection({'acc': Accuracy(task=self.task, num_classes=self.num_classes)})
+        self.train_metric = metric.clone(prefix='train_')
+        self.valid_metric = metric.clone(prefix='val_')
 
         self.test_acc = Accuracy(task=self.task, num_classes=self.num_classes)
         self.test_cm = ConfusionMatrix(task=self.task, num_classes=self.num_classes)
@@ -130,8 +136,13 @@ class SBERTClassifier(LightningModule):
         if self.loss_weights is not None:
             self.loss_weights = self.loss_weights.to(dtype=self.dtype, device=self.device)
 
-    def training_step(self, batch, batch_idx):
-        boa, doy, mask, y_true = batch
+    def on_train_start(self) -> None:
+        # log hyperparams
+        self.logger.log_hyperparams(self.hparams, {'train_acc_step': 0, 'val_acc': 0})
+        return super().on_train_start()
+    
+    def shared_step(self, batch, batch_idx, metric):
+        _, boa, doy, mask, y_true = batch
         y_pred = self((boa, doy, mask))
 
         loss = cross_entropy(y_pred, y_true, weight=self.loss_weights)
@@ -139,35 +150,24 @@ class SBERTClassifier(LightningModule):
         with torch.no_grad():
             y_pred_labels = torch.argmax(y_pred, dim=1)
 
-        # blabla for logging
-        acc = accuracy(y_pred_labels,  y_true, task=self.task, num_classes=self.num_classes)
-        pre = precision(y_pred_labels, y_true, task=self.task, num_classes=self.num_classes)
-        rec = recall(y_pred_labels,    y_true, task=self.task, num_classes=self.num_classes)
-
-        metrics_dict = {"train_loss": loss.item(), "train_acc": acc, "train_pre": pre, "train_rec": rec}
-        self.log_dict(metrics_dict, logger=True, on_epoch=True, sync_dist=True)
+        # torchmetrics are synced implicitly, no sync_dist needed
+        # https://github.com/Lightning-AI/lightning/discussions/6501
+        # but I can't find any syncs in the code, so keep it
+        self.log_dict(metric(y_pred_labels, y_true), on_epoch=True, sync_dist=True)
+        return loss
+    
+    def training_step(self, batch, batch_idx):
+        loss = self.shared_step(batch, batch_idx, self.train_metric)
+        self.log("train_loss", loss.item(), on_epoch=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        boa, doy, mask, y_true = batch
-        y_pred = self((boa, doy, mask))
-
-        loss = cross_entropy(y_pred, y_true, weight=self.loss_weights)
-
-        with torch.no_grad():
-            y_pred_labels = torch.argmax(y_pred, dim=1)
-
-        # blabla for logging
-        acc = accuracy(y_pred_labels,  y_true, task=self.task, num_classes=self.num_classes)
-        pre = precision(y_pred_labels, y_true, task=self.task, num_classes=self.num_classes)
-        rec = recall(y_pred_labels,    y_true, task=self.task, num_classes=self.num_classes)
-
-        metrics_dict = {"val_loss": loss.item(), "val_acc": acc, "val_pre": pre, "val_rec": rec}
-        self.log_dict(metrics_dict, logger=True, on_epoch=True, sync_dist=True)
+        loss = self.shared_step(batch, batch_idx, self.valid_metric)
+        self.log("val_loss", loss.item(), on_epoch=True, sync_dist=True)
         return loss
 
     def test_step(self, batch, batch_idx):
-        boa, doy, mask, y_true = batch
+        _, boa, doy, mask, y_true = batch
         y_pred = self((boa, doy, mask))
         y_pred_labels = torch.argmax(y_pred, dim=1)
 
@@ -204,7 +204,121 @@ class SBERTClassifier(LightningModule):
                      "frequency": 1,
                      }
         return {"optimizer": optimizer, "lr_scheduler": lr_config}
-        # return optimizer
+    
+    def predict_dataset(self, ds: InMemoryTimeSeriesDataset, batch_size=128, num_workers=4):
+        self.eval()
+        ids = []
+        trues = []
+        preds = []
+        with torch.no_grad():
+            for i, batch in enumerate(DataLoader(ds, batch_size=batch_size, num_workers=num_workers)):
+                tree_ids, boa, doy, mask, y_true = batch
+                boa = boa.to(self.device)
+                doy = doy.to(self.device)
+                mask = mask.to(self.device)
+                y_pred = self((boa, doy, mask))
+                y_pred_labels = torch.argmax(y_pred, dim=1)
+                ids.extend(tree_ids.numpy())
+                preds.extend([self.classes[x] for x in y_pred_labels.cpu().numpy()])
+                trues.extend([self.classes[x] for x in y_true.cpu().numpy()])
+        return pd.DataFrame({"tree_id": ids, "y_true": trues, "y_pred": preds, "correct": np.array(trues) == np.array(preds)})
+
+    def predict_timeseries(self, input_folder, qai, seq_len, output_filepath=None, t0=datetime.date(2015, 1, 1), batch_size=16, num_workers=0):
+
+        self.eval()
+        files = os.listdir(input_folder)
+        boa_filenames = list(sorted(filter(lambda x: 'SEN2' in x and 'BOA' in x, files)))[-seq_len:]
+        
+        if qai > 0:
+            qais = list(sorted(filter(lambda x: 'SEN2' in x and 'QAI' in x, files)))[-seq_len:]
+        
+        dates = [datetime.datetime.strptime(s[:8], '%Y%m%d').date() for s in boa_filenames]
+        days_since_t0 = np.array([(date - t0).days for date in dates])
+
+        print("Loading images")
+        sample_boa = read_img(os.path.join(input_folder, boa_filenames[0]), dim_ordering="HWC", dtype=np.int16)
+        h,w,c = sample_boa.shape
+        all_boas = np.empty((h,w,seq_len,c), dtype=np.int16)
+        if qai>0:
+            validity_mask = np.empty((h,w,seq_len,1), dtype=bool)
+
+        # read all the files
+        # for (i,f) in enumerate(boa_filenames):
+        #     fname = os.path.join(input_folder, f)
+        #     img = read_img(fname, dim_ordering="HWC", dtype=np.int16)
+        #     all_boas[:,:,i,:] = img
+        
+        if qai > 0:
+            for (i,f) in enumerate(qais):
+                fname = os.path.join(input_folder, f)
+                img = read_img(fname, dim_ordering="HWC", dtype=np.uint16)
+                validity_mask[:,:,i,:] = (img & qai) == 0
+
+            validity_mask = validity_mask.reshape((-1, seq_len))
+            n_obs = np.sum(validity_mask, axis=1)
+
+        all_boas = all_boas.reshape((-1, seq_len, c))
+
+        if qai > 0:
+            def pixel_generator():
+                i = 0
+                while i < all_boas.shape[0]:
+                    n = n_obs[i]
+                    mask = validity_mask[i]
+                    transformer_mask = np.zeros(seq_len, dtype=int)
+                    transformer_mask[:n] = 1
+                    this_pixels_times = np.zeros(seq_len, dtype=int)
+                    this_pixels_times[:n] = days_since_t0[mask]
+                    boa = np.zeros((seq_len, c), dtype=np.float32)
+                    boa[:n, :] = all_boas[i][mask]
+                    yield torch.from_numpy(boa), torch.from_numpy(this_pixels_times), torch.from_numpy(transformer_mask)
+                    i += 1
+        else:
+            def pixel_generator():
+                i = 0
+                while i < all_boas.shape[0]:
+                    transformer_mask = np.ones(seq_len, dtype=int)
+                    yield torch.from_numpy(all_boas[i]), torch.from_numpy(days_since_t0), torch.from_numpy(transformer_mask)
+                    i += 1
+
+
+        gen = GeneratorDataset(pixel_generator)
+        dl = DataLoader(gen, batch_size=batch_size, num_workers=num_workers, pin_memory=True)
+        output = np.zeros(w*h, dtype=np.uint8)
+
+        print("Starting prediction")
+        print(f"0 / {w*h//batch_size}")
+        with torch.no_grad():
+            for (i,batch) in enumerate(dl):
+                print(f"{i} / {w * h // batch_size}")
+                try:
+                    boa, doy, mask = batch
+                    boa = boa.to(self.device)
+                    doy = doy.to(self.device)
+                    mask = mask.to(self.device)
+                    pred = torch.argmax(self((boa, doy, mask)), dim=1)
+                    start = i*batch_size
+                    stop = start + pred.shape[0]
+                    output[start:stop] = pred.cpu().numpy()
+                except Exception as err:
+                    print(err)
+                    break
+
+        output = output.reshape((h, w))
+
+        
+        if output_filepath is None:
+            if os.path.isdir(input_folder) and input_folder[-1] != os.sep:
+                input_folder += os.sep
+
+            output_filename = input_folder.split(os.sep)[-2]
+            assert output_filename != "", "Calculated empty output file name, check input directory."
+            output_filepath = os.path.join(os.path.abspath(input_folder), f"{output_filename}.tif")
+        
+        sample_filepath = os.path.join(input_folder, boa_filenames[0])
+        print(f"Writing file {output_filepath}")
+        array_to_tif(output, output_filepath, src_raster=sample_filepath)
+        return output
 
 
 class MultiModalTreeClassifier(LightningModule):
@@ -320,5 +434,29 @@ class MultiModalTreeClassifier(LightningModule):
         self.log_dict(metrics_dict, logger=True, on_epoch=True, sync_dist=True)
         return loss
 
-    def configure_optimizers(self) -> Any:
+    def configure_optimizers(self):
         return optim.Adam(params=self.parameters(), lr=self.lr)
+
+
+class MockSBERTClassifier(LightningModule):
+    """Only exists to test CLI setup quickly."""
+    def __init__(self,
+                 num_classes: int,
+                 lr: float,
+                 loss_weights: list,
+                 use_weighted_loss: bool = False,
+                 satellite_input_channels: int = 10,
+                 hidden_dim: int = 256,
+                 transformer_layercount: int = 3,
+                 num_attention_heads: int = 8,
+                 max_embedding_size: int = 366,
+                 cosine_init_period: int = 900,
+                 classes: "list[str]" = None  # only needed for the test step
+                ):
+        super().__init__()
+        self.num_classes = num_classes
+        self.loss_weights = loss_weights
+        self.classes = classes
+
+    def forward(self, x):
+        pass

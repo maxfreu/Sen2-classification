@@ -15,7 +15,7 @@ class Attention(nn.Module):
                  / math.sqrt(query.size(-1))
 
         if mask is not None:
-            scores = scores.masked_fill(mask == 0, -1e9)
+            scores = scores.masked_fill(mask == 0, 0.)
 
         p_attn = F.softmax(scores, dim=-1)
 

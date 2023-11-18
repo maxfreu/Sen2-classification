@@ -14,6 +14,7 @@ setup(name='TreeClassifier',
           "gdal>=3.0.0",
           "torchmetrics>=0.11.0",
           "torchvision>=0.15",
-          "pandas>=1.0.0"
+          "pandas>=1.0.0",
+          "rioxarray"
       ]
      )

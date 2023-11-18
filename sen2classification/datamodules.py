@@ -83,7 +83,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                  satellite_input_channels: int = 10,
                  quality_mask: int = CLOUD_OR_NODATA,
                  class_mapping: dict[str, str] = None,
-                 single_year_training: bool = True,
+                 return_mode: str = "random",
                  num_workers: int = 8,
                  train_split: float = 0.7,
                  seed: int = 42,
@@ -96,7 +96,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.quality_mask = quality_mask
         self.batch_size = batch_size
         self.class_mapping = class_mapping
-        self.single_year_training = single_year_training
+        self.return_mode = return_mode
         self.num_workers = num_workers
         self.train_split = train_split
         self.seed = seed
@@ -104,32 +104,33 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.val_data = None
         self.is_setup = False
         self.prepare_data_per_node = True
+        self.classes_ = None
 
     def prepare_data(self) -> None:
         tmppath = f"/tmp/{self.dbname}.sqlite"
         if not os.path.isfile(tmppath) or os.path.getsize(tmppath) == 0:
             shutil.copy2(self.sqlite_path, tmppath)
 
-    def setup(self, stage: str) -> None:
-        rank = utils.get_worker_rank()
-        print(f"Called setup on worker {rank}.")
-
+    def get_train_val_ids(self):
         tmppath = f"/tmp/{self.dbname}.sqlite"
         rstate = np.random.default_rng(self.seed)
-
-        print(os.path.getsize(tmppath))
-        print(f"getting tnrs on worker {rank}")
-        t0 = time.time()
         conn = sqlite3.connect(tmppath)
         tnrs = list(pd.read_sql_query(f"SELECT DISTINCT tnr FROM {self.dbname}", conn).tnr)
         rstate.shuffle(tnrs)
         conn.close()
-        print(f"getting tnrs took {time.time()-t0}s on worker {rank}")
 
         train_ids, val_ids = random_split(tnrs, [self.train_split, 1-self.train_split],
                                           generator=torch.Generator().manual_seed(self.seed))
+        return train_ids, val_ids
+        
+    def setup(self, stage: str) -> None:
+        if self.is_setup:
+            return
+        
+        tmppath = f"/tmp/{self.dbname}.sqlite"
+        train_ids, val_ids = self.get_train_val_ids()
 
-        print(f"Loading training dataset on worker {rank}.")
+        print(f"Loading training dataset.")
         t0 = time.time()
         self.training_data = InMemoryTimeSeriesDataset(tmppath,
                                                        self.dbname,
@@ -137,11 +138,11 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                        self.satellite_input_channels,
                                                        self.quality_mask,
                                                        class_mapping=self.class_mapping,
-                                                       return_single_random_year=self.single_year_training,
+                                                       return_mode=self.return_mode,
                                                        plot_ids=train_ids)
-        print(f"Loading training ds on worker {rank} took {time.time() -t0}s.")
+        print(f"Loading training ds took {time.time() -t0}s.")
 
-        print(f"Loading val dataset on worker {rank}.")
+        print(f"Loading val dataset.")
         t0 = time.time()
         self.val_data = InMemoryTimeSeriesDataset(tmppath,
                                                   self.dbname,
@@ -149,13 +150,12 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                   self.satellite_input_channels,
                                                   self.quality_mask,
                                                   class_mapping=self.class_mapping,
-                                                  return_single_random_year=self.single_year_training,
+                                                  return_mode=self.return_mode,
                                                   plot_ids=val_ids)
-        print(f"Loading val ds on worker {rank} took {time.time() - t0}s.")
+        print(f"Loading val ds took {time.time() - t0}s.")
 
     def train_dataloader(self):
-        return torch.utils.data.DataLoader(self.training_data, pin_memory=True, shuffle=True, batch_size=self.batch_size,
-                                           num_workers=self.num_workers)
+        return torch.utils.data.DataLoader(self.training_data, pin_memory=True, shuffle=True, batch_size=self.batch_size, num_workers=self.num_workers, drop_last=True)
 
     def val_dataloader(self):
         return torch.utils.data.DataLoader(self.val_data, pin_memory=True, batch_size=self.batch_size, num_workers=self.num_workers)
@@ -165,20 +165,38 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
 
     @property
     def num_classes(self):
-        if not self.is_setup:
-            self.prepare_data()
-            self.setup("fit")
-            self.is_setup = True
-        return self.training_data.num_classes
+        if self.class_mapping is not None:
+            self.classes_ = list(sorted(set(self.class_mapping.values())))
+            return len(self.classes_)
+        else:
+            # in this case we have to get the train ids and look up the classes in via sql query
+            raise NotImplementedError("class mapping must be given")
+        
+        # if not self.is_setup:
+        #     self.prepare_data()
+        #     self.setup("fit")
+        #     self.is_setup = True
+        # return self.training_data.compute_class_weights()
 
     @property
     def classes(self):
-        if not self.is_setup:
-            self.prepare_data()
-            self.setup("fit")
-            self.is_setup = True
-        return self.training_data.classes
+        if self.class_mapping is not None:
+            self.classes_ = list(sorted(set(self.class_mapping.values())))
+            return self.classes_
+        else:
+            raise NotImplementedError("class mapping must be given")
 
+    @property
+    def class_counts(self):
+        counts = []
+        if self.class_mapping is None:
+            mapped_classes = np.array(list(self.grouped_df.ba.first()))
+        else:
+            mapped_classes = np.array([self.class_mapping[int(ba)] for ba in np.array(list(self.grouped_df.ba.first()))])
+        for cls in self.classes:
+            counts.append((mapped_classes == cls).sum())
+        return counts
+    
     @property
     def class_weights(self):
         if not self.is_setup:
@@ -187,12 +205,31 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
             self.is_setup = True
         return self.training_data.compute_class_weights()
 
-    def teardown(self, stage: str):
-        try:
-            os.remove(f"/tmp/{self.dbname}.sqlite")
-        except FileNotFoundError:
-            pass
+    # def teardown(self, stage: str):
+    #     try:
+    #         os.remove(f"/tmp/{self.dbname}.sqlite")
+    #     except FileNotFoundError:
+    #         pass
 
+
+class MockTimeSeriesClassificationDataModule(L.LightningDataModule):
+    """This only exists to test the CLI setup."""
+    def __init__(self,
+                 sqlite_path: str,
+                 dbname: str,
+                 batch_size: int,
+                 sequence_length: int = 32,
+                 satellite_input_channels: int = 10,
+                 quality_mask: int = CLOUD_OR_NODATA,
+                 class_mapping: dict[str, str] = None,
+                 return_mode: str = "random",
+                 num_workers: int = 8,
+                 train_split: float = 0.7,
+                 seed: int = 42,
+                 ):
+        self.num_classes = 0
+        self.class_weights = [0]
+        self.classes = []
 
 class MultiModalClassificationDataModule(L.LightningDataModule):
     def __init__(self,

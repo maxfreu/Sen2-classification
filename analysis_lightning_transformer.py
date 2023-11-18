@@ -66,7 +66,7 @@ def analyze(folder, ckpt=None):
 
     print("data loaded")
 
-    model = SBERTClassifier.load_from_checkpoint(checkpoint, map_location=device, max_embedding_size=366 if dm.single_year_training else 2600)
+    model = SBERTClassifier.load_from_checkpoint(checkpoint, map_location=device, max_embedding_size=366 if dm.return_mode else 2600)
     # model.model = torch.nn.Sequential(torch.nn.Identity(), model.model)
     # model.model.load_state_dict(torch.load("./weights/resnet_laub_nadel_imbalanced/resnet_laub_nadel_imbalanced.pt", map_location=device))
     # model.model.load_state_dict(torch.load("deleteme.pt", map_location=device))

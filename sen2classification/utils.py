@@ -2,10 +2,12 @@ import os
 import torch
 import numpy as np
 import warnings
-from osgeo import gdal
+from osgeo import gdal, osr
 import osgeo.gdalnumeric as gdn
 from itertools import islice
-from torch import distributed as dist
+from torch.utils.data import IterableDataset
+gdal.UseExceptions()
+
 
 def batched(iterable, n):
     "Batch data into tuples of length n. The last batch may be shorter."
@@ -113,15 +115,89 @@ def count_files_in_subfolders(directory):
     return result
 
 
-def get_worker_rank():
-    """
-    Get the worker rank if distributed training is initialized.
-    Return 0 if distributed training is not initialized.
+class GeneratorDataset(IterableDataset):
+    def __init__(self, generator):
+        self.generator = generator
 
-    Returns:
-        int: Worker rank or 0 if not initialized.
+    def __iter__(self):
+        return self.generator()
+
+
+def xarray_trafo_to_gdal_trafo(xarray_trafo):
+    xres, xskew, xmin, yskew, yres, ymax = xarray_trafo
+    return (xmin, xres, xskew, ymax, yskew, yres)
+
+
+def array_to_tif(array, dst_filename, num_bands='multi', save_background=True, src_raster: str = "", transform=None,
+                 crs=None):
+    """ Takes a numpy array with predictions and writes a tif. Uses ZSTD compression.
+
+    Args:
+        array: numpy array (HWC)
+        dst_filename (str): Destination file name/path
+        num_bands (str): 'single' or 'multi'. If 'single' is chosen, everything is saved into one layer. The values
+            in each layer of the input array are multiplied with the layer index and summed up. This is suitable for
+            mutually exclusive categorical labels or single layer arrays. 'multi' is for normal images.
+        save_background (bool): Whether or not to save the last layer, which is often the background class.
+            Set to `True` for normal images.
+        src_raster (str): Raster file used to determine the corner coords.
+        transform: A geotransform in the gdal format
+        crs: A coordinate reference system as proj4 string
     """
-    if dist.is_available() and dist.is_initialized():
-        return dist.get_rank()
+    if src_raster != "":
+        src_raster = gdal.Open(src_raster)
+        x_pixels = src_raster.RasterXSize
+        y_pixels = src_raster.RasterYSize
+    elif transform is not None and crs is not None:
+        y_pixels, x_pixels = array.shape[:2]
     else:
-        return -1
+        raise RuntimeError("Please provide either a source raster file or geotransform and coordinate reference "
+                           "system.")
+
+    bands = min( array.shape ) if array.ndim==3 else 1
+    if not save_background and array.ndim==3: bands -= 1
+
+    driver = gdal.GetDriverByName('GTiff')
+
+    datatype = str(array.dtype)
+    datatype_mapping = {'byte': gdal.GDT_Byte, 'uint8': gdal.GDT_Byte, 'uint16': gdal.GDT_UInt16,
+                        'uint32': gdal.GDT_UInt32, 'int8': gdal.GDT_Byte, 'int16': gdal.GDT_Int16,
+                        'int32': gdal.GDT_Int32, 'float16': gdal.GDT_Float32, 'float32': gdal.GDT_Float32}
+    options = ["COMPRESS=ZSTD"]
+    if datatype == "float16":
+        options.append("NBITS=16")
+
+    out = driver.Create(
+        dst_filename,
+        x_pixels,
+        y_pixels,
+        1 if num_bands == 'single' else bands,
+        datatype_mapping[datatype],
+        options=options)
+
+    if src_raster != "":
+        out.SetGeoTransform(src_raster.GetGeoTransform())
+        out.SetProjection(src_raster.GetProjection())
+    else:
+        out.SetGeoTransform(transform)
+        srs = osr.SpatialReference()
+        srs.ImportFromProj4(crs)
+        out.SetProjection(srs.ExportToWkt())
+
+    if array.ndim == 2:
+        out.GetRasterBand(1).WriteArray(array)
+        out.GetRasterBand(1).SetNoDataValue(0)
+    else:
+        if num_bands == 'single':
+            singleband = np.zeros(array.shape[:2], dtype=array.dtype)
+            for i in range(bands):
+                singleband += (i+1)*array[:,:,i]
+            out.GetRasterBand(1).WriteArray( singleband )
+            out.GetRasterBand(1).SetNoDataValue(0)
+
+        elif num_bands == 'multi':
+            for i in range(bands):
+                out.GetRasterBand(i+1).WriteArray( array[:,:,i] )
+                out.GetRasterBand(i+1).SetNoDataValue(0)
+
+    out.FlushCache()  # Write to disk.

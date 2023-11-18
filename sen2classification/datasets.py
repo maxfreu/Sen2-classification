@@ -125,8 +125,9 @@ class InMemoryTimeSeriesDataset(Dataset):
                  quality_mask=CLOUD_OR_NODATA,
                  min_obs: int = 12,
                  class_mapping: dict = None,
-                 return_single_random_year: bool = False,
-                 plot_ids: tuple = None):
+                 return_mode: str = "random",
+                 plot_ids: tuple = None,
+                 num_workers: int = 0):
         """ In-memory dataset for time series classification.
 
         Args:
@@ -137,13 +138,18 @@ class InMemoryTimeSeriesDataset(Dataset):
             quality_mask: Bit-encoded quality mask (see webpage of FORCE satellite processing toolbox)
             min_obs: Minimum number of observations / time points to return
             class_mapping: Dictionary optionally mapping tree species ids to classes
-            return_single_random_year: Whether to return data from a random single year or from all available years
+            return_mode: Can be 'random' (default) to return a sequence with at maximum 'sequence_length' 
+                samples drawn from a random starting point in time onwards, 'single' to return data from a 
+                random single year, or 'last' to return at most the latest 'sequence_length' points.
             plot_ids: Plot ids (from tnr field) to load; can be used for training / val selection
+            num_workers: Dataloader worker count
         """
+        if return_mode not in ("random", "single", "last"):
+            raise RuntimeError(f"Please provide the correct return mode; either random, single or last. Received {return_mode}")
         self.sequence_length = sequence_length
         self.satellite_input_channels = satellite_input_channels
         self.min_obs = min_obs
-        self.return_single_random_year = return_single_random_year
+        self.return_mode = return_mode
         conn = sqlite3.connect(sqlite_path)
         conn.text_factory = bytes  # this makes sqlite return strings as bytes that we can parse via numpy
         # load all data or only some plots
@@ -152,14 +158,16 @@ class InMemoryTimeSeriesDataset(Dataset):
         else:
             self.df = pd.read_sql_query(f"SELECT * FROM {dbname} WHERE tnr IN {tuple(plot_ids)}", conn)
         self.df = self.df[(self.df.qai & quality_mask) == 0]
-        self.df.boa = [np.frombuffer(x, dtype=np.int32) for x in self.df.boa]
+        self.df.boa = [np.frombuffer(x, dtype=np.int16) for x in self.df.boa]
         self.df.time = [datetime.date.fromtimestamp(t) for t in self.df.time]
+        self.df["dayssinceepoch"] = [(t - datetime.date(2015,1,1)).days for t in self.df.time]
         self.df["year"] = [t.year for t in self.df.time]
         self.grouped_df = self.df.groupby("tree_id")
         self.tree_ids = list(self.grouped_df.groups.keys())
         np.random.shuffle(self.tree_ids)
         conn.close()
 
+        self.num_workers = num_workers if num_workers > 0 else 1
         self.class_mapping = class_mapping
         if class_mapping is not None:
             self.classes = list(sorted(set(class_mapping.values())))
@@ -194,7 +202,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         subgroup = subgroup.sort_values("time")
 
         # return single year or all available data
-        if self.return_single_random_year:
+        if self.return_mode == "single":
             year_group = subgroup.groupby("year")
             available_years = np.array(list(year_group.groups.keys()))
             # select years with enough observations, so that the transformer has
@@ -207,24 +215,36 @@ class InMemoryTimeSeriesDataset(Dataset):
                 random_year = np.random.choice(available_years)
 
             selection = year_group.get_group(random_year)[:self.sequence_length]
+        elif self.return_mode == "random":
+            n = subgroup.shape[0]
+            if n > self.sequence_length:
+                start = np.random.randint(0, high=n-self.sequence_length)
+                selection = subgroup[start:start+self.sequence_length]
+            else:
+                selection = subgroup
+        elif self.return_mode == "last":
+            n = subgroup.shape[0]
+            if n > self.sequence_length:
+                selection = subgroup[-self.sequence_length:]
+            else:
+                selection = subgroup
         else:
-            selection = subgroup
+            raise RuntimeError(f"Return mode must be one of random, single or last, but is {self.return_mode}")
 
-        n_obs = selection.shape[0] if selection.shape[0] < self.sequence_length else self.sequence_length
+        n_obs = min(selection.shape[0], self.sequence_length)
 
         boa = np.zeros((self.sequence_length, self.satellite_input_channels), dtype=np.float32)
         boa[:n_obs, :] = np.stack(selection.boa[:n_obs])
         boa[:n_obs, :] += (np.random.rand() - 0.5) * 2 * 10  # add random noise as augmentation
 
-        # TODO: integrate year information
         times = np.zeros(self.sequence_length, dtype=int)
 
-        if self.return_single_random_year:
+        if self.return_mode:
             times[:n_obs] = selection.doy[:n_obs]
         else:
             # if we work with the entire time series, we take the
             # days since beginning of launch year of sentinel 2
-            times[:n_obs] = [(t - datetime.date(2015,1,1)).days for t in selection.time[:n_obs]]
+            times[:n_obs] = selection.dayssinceepoch[:n_obs]
 
         mask = np.zeros(self.sequence_length, dtype=int)
         mask[:n_obs] = 1
@@ -233,15 +253,30 @@ class InMemoryTimeSeriesDataset(Dataset):
         if self.class_mapping is not None:
             cls = self.class_mapping[int(cls)]
 
-        return boa, times, mask, self.class_index(cls)
+        return tree_id, boa, times, mask, self.class_index(cls)
 
     def __getitem__(self, item):
         tree_id = self.tree_ids[item]  # indirection to be able to index into the dataset with 0..len-1
         return self.get_tree_data(tree_id)
 
     def __len__(self):
-        return len(self.tree_ids)
+        """Returns the number of samples per worker!!!"""
+        return len(self.tree_ids) // self.num_workers
+    
+    @staticmethod
+    def worker_init_fn(worker_id):
+        """Here we highly reduce the memory footprint by splitting the dataset across workers."""
+        worker_info = torch.utils.data.get_worker_info()
+        print(f"setting up worker {worker_id}")
+        dataset = worker_info.dataset
+        all_ids = dataset.tree_ids
+        subset = np.array_split(all_ids, worker_info.num_workers)[worker_id]
+        print(f"worker {worker_id} subset size: {len(subset)} / {len(all_ids)}")
 
+        dataset.tree_ids = subset
+        dataset.df = dataset.df[dataset.df["tree_id"].isin(subset)]
+        dataset.grouped_df = dataset.df.groupby("tree_id")
+    
     # @staticmethod
     # def get_random_365_days(startdate, enddate):
     #     dates_bet = enddate - startdate

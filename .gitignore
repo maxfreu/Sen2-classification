@@ -5,6 +5,10 @@ slurmlogs/
 lightning_logs/
 confmats/
 *.png
+*.sqlite
+*.out
+*.tif
+*.aux.xml
 
 *deleteme*
 *sandbox*

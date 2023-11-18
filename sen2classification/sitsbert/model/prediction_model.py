@@ -1,6 +1,7 @@
 import torch.nn as nn
 from .bert import SBERT
 
+
 class SBERTPrediction(nn.Module):
     """
     Pre-training task: predicting contaminated observations given an entire annual satellite time series

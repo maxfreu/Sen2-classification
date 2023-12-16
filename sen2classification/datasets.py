@@ -120,6 +120,7 @@ class InMemoryTimeSeriesDataset(Dataset):
     def __init__(self,
                  sqlite_path,
                  dbname,
+                 augmentation=None
                  sequence_length=32,
                  satellite_input_channels=10,
                  quality_mask=CLOUD_OR_NODATA,
@@ -133,6 +134,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         Args:
             sqlite_path: Path to the sqlite dataset file
             dbname: Name of the contained table
+            augmentation: Optional augmentation function that acts on a single BOA observation
             sequence_length: The maximum sequence length
             satellite_input_channels: Number of satellite image channels
             quality_mask: Bit-encoded quality mask (see webpage of FORCE satellite processing toolbox)
@@ -147,6 +149,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         if return_mode not in ("random", "single", "last"):
             raise RuntimeError(f"Please provide the correct return mode; either random, single or last. Received {return_mode}")
         self.sequence_length = sequence_length
+        self.augmentation = augmentation
         self.satellite_input_channels = satellite_input_channels
         self.min_obs = min_obs
         self.return_mode = return_mode
@@ -234,8 +237,12 @@ class InMemoryTimeSeriesDataset(Dataset):
         n_obs = min(selection.shape[0], self.sequence_length)
 
         boa = np.zeros((self.sequence_length, self.satellite_input_channels), dtype=np.float32)
-        boa[:n_obs, :] = np.stack(selection.boa[:n_obs])
-        boa[:n_obs, :] += (np.random.rand() - 0.5) * 2 * 10  # add random noise as augmentation
+        
+        if self.augmentation is not None:
+            augmented_boas = [self.augment(obs) for obs in selection.boa[:n_obs]]
+            boa[:n_obs, :] = np.stack(augmented_boas)
+        else:
+            boa[:n_obs, :] = np.stack(selection.boa[:n_obs])
 
         times = np.zeros(self.sequence_length, dtype=int)
 

@@ -224,7 +224,6 @@ class SBERTClassifier(LightningModule):
         return pd.DataFrame({"tree_id": ids, "y_true": trues, "y_pred": preds, "correct": np.array(trues) == np.array(preds)})
 
     def predict_timeseries(self, input_folder, qai, seq_len, output_filepath=None, t0=datetime.date(2015, 1, 1), batch_size=16, num_workers=0):
-
         self.eval()
         files = os.listdir(input_folder)
         boa_filenames = list(sorted(filter(lambda x: 'SEN2' in x and 'BOA' in x, files)))[-seq_len:]
@@ -281,7 +280,6 @@ class SBERTClassifier(LightningModule):
                     yield torch.from_numpy(all_boas[i]), torch.from_numpy(days_since_t0), torch.from_numpy(transformer_mask)
                     i += 1
 
-
         gen = GeneratorDataset(pixel_generator)
         dl = DataLoader(gen, batch_size=batch_size, num_workers=num_workers, pin_memory=True)
         output = np.zeros(w*h, dtype=np.uint8)
@@ -306,7 +304,6 @@ class SBERTClassifier(LightningModule):
 
         output = output.reshape((h, w))
 
-        
         if output_filepath is None:
             if os.path.isdir(input_folder) and input_folder[-1] != os.sep:
                 input_folder += os.sep

@@ -87,6 +87,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                  num_workers: int = 8,
                  train_split: float = 0.7,
                  seed: int = 42,
+                 where: str = "",
                  ):
         super().__init__()
         self.sqlite_path = sqlite_path
@@ -100,6 +101,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.num_workers = num_workers
         self.train_split = train_split
         self.seed = seed
+        self.where = where
         self.training_data = None
         self.val_data = None
         self.is_setup = False
@@ -111,47 +113,60 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         if not os.path.isfile(tmppath) or os.path.getsize(tmppath) == 0:
             shutil.copy2(self.sqlite_path, tmppath)
 
-    def get_train_val_ids(self):
+    def get_random_train_val_ids(self):
         tmppath = f"/tmp/{self.dbname}.sqlite"
         rstate = np.random.default_rng(self.seed)
         conn = sqlite3.connect(tmppath)
-        tnrs = list(pd.read_sql_query(f"SELECT DISTINCT tnr FROM {self.dbname}", conn).tnr)
+        tnrs = list(pd.read_sql_query(f"SELECT DISTINCT tnr FROM {self.dbname} WHERE ", conn).tnr)
         rstate.shuffle(tnrs)
         conn.close()
 
         train_ids, val_ids = random_split(tnrs, [self.train_split, 1-self.train_split],
                                           generator=torch.Generator().manual_seed(self.seed))
         return train_ids, val_ids
-        
+
+    def get_preselected_train_val_ids(self):
+        tmppath = f"/tmp/{self.dbname}.sqlite"
+        conn = sqlite3.connect(tmppath)
+        train_ids = list(pd.read_sql_query(f"SELECT DISTINCT tnr FROM {self.dbname} WHERE is_train==1", conn).tnr)
+        val_ids = list(pd.read_sql_query(f"SELECT DISTINCT tnr FROM {self.dbname} WHERE is_train==0", conn).tnr)
+        conn.close()
+
+        return train_ids, val_ids
+
+    def augmentation(self, boa_observation):
+        return boa_observation * (0.98 + np.random.rand(self.satellite_input_channels)*0.04)
+
     def setup(self, stage: str) -> None:
         if self.is_setup:
             return
         
         tmppath = f"/tmp/{self.dbname}.sqlite"
-        train_ids, val_ids = self.get_train_val_ids()
 
         print(f"Loading training dataset.")
         t0 = time.time()
         self.training_data = InMemoryTimeSeriesDataset(tmppath,
                                                        self.dbname,
+                                                       self.augmentation,
                                                        self.sequence_length,
                                                        self.satellite_input_channels,
                                                        self.quality_mask,
                                                        class_mapping=self.class_mapping,
                                                        return_mode=self.return_mode,
-                                                       plot_ids=train_ids)
+                                                       where=self.where + " AND is_train = TRUE" if self.where else "is_train = TRUE")
         print(f"Loading training ds took {time.time() -t0}s.")
 
         print(f"Loading val dataset.")
         t0 = time.time()
         self.val_data = InMemoryTimeSeriesDataset(tmppath,
                                                   self.dbname,
-                                                  self.sequence_length,
-                                                  self.satellite_input_channels,
-                                                  self.quality_mask,
+                                                  sequence_length=self.sequence_length,
+                                                  satellite_input_channels=self.satellite_input_channels,
+                                                  quality_mask=self.quality_mask,
                                                   class_mapping=self.class_mapping,
                                                   return_mode=self.return_mode,
-                                                  plot_ids=val_ids)
+                                                  where=self.where + " AND is_train = FALSE" if self.where else "is_train = FALSE")
+        print("Classes in val / test set: ", np.unique(self.val_data.df["ba"]))
         print(f"Loading val ds took {time.time() - t0}s.")
 
     def train_dataloader(self):
@@ -186,16 +201,16 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         else:
             raise NotImplementedError("class mapping must be given")
 
-    @property
-    def class_counts(self):
-        counts = []
-        if self.class_mapping is None:
-            mapped_classes = np.array(list(self.grouped_df.ba.first()))
-        else:
-            mapped_classes = np.array([self.class_mapping[int(ba)] for ba in np.array(list(self.grouped_df.ba.first()))])
-        for cls in self.classes:
-            counts.append((mapped_classes == cls).sum())
-        return counts
+    # @property
+    # def class_counts(self):
+    #     counts = []
+    #     if self.class_mapping is None:
+    #         mapped_classes = np.array(list(self.grouped_df.ba.first()))
+    #     else:
+    #         mapped_classes = np.array([self.class_mapping[int(ba)] for ba in np.array(list(self.grouped_df.ba.first()))])
+    #     for cls_ in self.classes:
+    #         counts.append((mapped_classes == cls_).sum())
+    #     return counts
     
     @property
     def class_weights(self):
@@ -230,6 +245,7 @@ class MockTimeSeriesClassificationDataModule(L.LightningDataModule):
         self.num_classes = 0
         self.class_weights = [0]
         self.classes = []
+
 
 class MultiModalClassificationDataModule(L.LightningDataModule):
     def __init__(self,

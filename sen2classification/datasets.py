@@ -120,7 +120,7 @@ class InMemoryTimeSeriesDataset(Dataset):
     def __init__(self,
                  sqlite_path,
                  dbname,
-                 augmentation=None
+                 augmentation=None,
                  sequence_length=32,
                  satellite_input_channels=10,
                  quality_mask=CLOUD_OR_NODATA,
@@ -128,7 +128,9 @@ class InMemoryTimeSeriesDataset(Dataset):
                  class_mapping: dict = None,
                  return_mode: str = "random",
                  plot_ids: tuple = None,
-                 num_workers: int = 0):
+                 num_workers: int = 0,
+                 where: str = ""
+                 ):
         """ In-memory dataset for time series classification.
 
         Args:
@@ -145,6 +147,8 @@ class InMemoryTimeSeriesDataset(Dataset):
                 random single year, or 'last' to return at most the latest 'sequence_length' points.
             plot_ids: Plot ids (from tnr field) to load; can be used for training / val selection
             num_workers: Dataloader worker count
+            where: SQL Where clause to filter data while loading, e.g. `species > 100 AND is_pure = TRUE` to select only
+                deciduous trees from pure stands.
         """
         if return_mode not in ("random", "single", "last"):
             raise RuntimeError(f"Please provide the correct return mode; either random, single or last. Received {return_mode}")
@@ -156,12 +160,25 @@ class InMemoryTimeSeriesDataset(Dataset):
         conn = sqlite3.connect(sqlite_path)
         conn.text_factory = bytes  # this makes sqlite return strings as bytes that we can parse via numpy
         # load all data or only some plots
+
+        columns = "tree_id, species, boa, qai, time, doy"
+
         if plot_ids is None:
-            self.df = pd.read_sql_query(f"SELECT * FROM {dbname}", conn)
+            if where:
+                self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname} WHERE {where}", conn)
+            else:
+                self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname}", conn)
         else:
-            self.df = pd.read_sql_query(f"SELECT * FROM {dbname} WHERE tnr IN {tuple(plot_ids)}", conn)
+            if where:
+                self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname} WHERE tnr IN {tuple(plot_ids)} AND {where}", conn)
+            else:
+                self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname} WHERE tnr IN {tuple(plot_ids)}", conn)
+
         self.df = self.df[(self.df.qai & quality_mask) == 0]
-        self.df.boa = [np.frombuffer(x, dtype=np.int16) for x in self.df.boa]
+
+        # convert the bytes to a numpy array
+        # 16 bit is a storage format - we convert it to 32 bit for faster calculations at the cost of RAM
+        self.df.boa = [np.frombuffer(x, dtype=np.int16).astype(np.int32) for x in self.df.boa]
         self.df.time = [datetime.date.fromtimestamp(t) for t in self.df.time]
         self.df["dayssinceepoch"] = [(t - datetime.date(2015,1,1)).days for t in self.df.time]
         self.df["year"] = [t.year for t in self.df.time]
@@ -175,7 +192,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         if class_mapping is not None:
             self.classes = list(sorted(set(class_mapping.values())))
         else:
-            self.classes = list(sorted(self.df.ba.unique()))
+            self.classes = list(sorted(self.df.species.unique()))
 
         self.num_classes = len(self.classes)
 
@@ -190,9 +207,9 @@ class InMemoryTimeSeriesDataset(Dataset):
     def class_counts(self):
         counts = []
         if self.class_mapping is None:
-            mapped_classes = np.array(list(self.grouped_df.ba.first()))
+            mapped_classes = np.array(list(self.grouped_df.species.first()))
         else:
-            mapped_classes = np.array([self.class_mapping[int(ba)] for ba in np.array(list(self.grouped_df.ba.first()))])
+            mapped_classes = np.array([self.class_mapping[int(sp)] for sp in np.array(list(self.grouped_df.species.first()))])
         for cls in self.classes:
             counts.append((mapped_classes == cls).sum())
         return counts
@@ -239,7 +256,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         boa = np.zeros((self.sequence_length, self.satellite_input_channels), dtype=np.float32)
         
         if self.augmentation is not None:
-            augmented_boas = [self.augment(obs) for obs in selection.boa[:n_obs]]
+            augmented_boas = [self.augmentation(obs) for obs in selection.boa[:n_obs]]
             boa[:n_obs, :] = np.stack(augmented_boas)
         else:
             boa[:n_obs, :] = np.stack(selection.boa[:n_obs])
@@ -256,7 +273,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         mask = np.zeros(self.sequence_length, dtype=int)
         mask[:n_obs] = 1
 
-        cls = selection.ba.iloc[0]
+        cls = selection.species.iloc[0]
         if self.class_mapping is not None:
             cls = self.class_mapping[int(cls)]
 

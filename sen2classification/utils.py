@@ -120,7 +120,7 @@ class GeneratorDataset(IterableDataset):
         self.generator = generator
 
     def __iter__(self):
-        return self.generator()
+        return self.generator
 
 
 def xarray_trafo_to_gdal_trafo(xarray_trafo):

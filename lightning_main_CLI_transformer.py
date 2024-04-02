@@ -46,7 +46,9 @@ cli = CLIWithWeightedLoss(SBERTClassifier,
 # compiled_model = utils.maybe_compile(cli.model)
 cli.trainer.fit(cli.model, cli.datamodule)
 
-# below is only test stuff
+############################
+# below is only test stuff #
+############################
 
 # test with only one device
 if cli.trainer.num_devices > 1:

@@ -19,6 +19,7 @@ import datetime
 from .utils import GeneratorDataset, read_img, array_to_tif
 import rioxarray
 
+
 #%%
 class TreeClassifier(LightningModule):
     def __init__(self, num_classes: int, lr: float, loss_weights: list, use_weighted_loss: bool = False):
@@ -190,15 +191,15 @@ class SBERTClassifier(LightningModule):
         plot_confusion_matrix(cm, classes=self.classes, fmt=".0f",
                               outfile=os.path.join(outpath, f"confmat_unnormalized_{version}.png"), fontsize=4)
 
-        plot_confusion_matrix(cm, classes=self.classes, fmt=".1f", normalize="precision",
+        plot_confusion_matrix(cm, classes=self.classes, fmt=".2f", normalize="precision",
                               outfile=os.path.join(outpath, f"confmat_precision_{version}.png"), fontsize="xx-small")
 
-        plot_confusion_matrix(cm, classes=self.classes, fmt=".1f", normalize="recall",
+        plot_confusion_matrix(cm, classes=self.classes, fmt=".2f", normalize="recall",
                               outfile=os.path.join(outpath, f"confmat_recall_{version}.png"), fontsize="xx-small")
 
     def configure_optimizers(self) -> Any:
         optimizer = optim.Adam(params=self.parameters(), lr=self.lr)
-        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, self.cosine_init_period, T_mult=1, eta_min=1e-6, last_epoch=-1)
+        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, self.cosine_init_period, T_mult=2, eta_min=1e-6, last_epoch=-1)
         lr_config = {"scheduler": scheduler,
                      "interval": "step",
                      "frequency": 1,
@@ -223,14 +224,16 @@ class SBERTClassifier(LightningModule):
                 trues.extend([self.classes[x] for x in y_true.cpu().numpy()])
         return pd.DataFrame({"tree_id": ids, "y_true": trues, "y_pred": preds, "correct": np.array(trues) == np.array(preds)})
 
-    def predict_timeseries(self, input_folder, qai, seq_len, output_filepath=None, t0=datetime.date(2015, 1, 1), batch_size=16, num_workers=0):
+    def predict_timeseries(self, input_folder, qai, seq_len, output_filepath=None, save=True, t0=datetime.date(2015, 1, 1), batch_size=16, num_workers=0):
         self.eval()
         files = os.listdir(input_folder)
         boa_filenames = list(sorted(filter(lambda x: 'SEN2' in x and 'BOA' in x, files)))[-seq_len:]
-        
+
         if qai > 0:
             qais = list(sorted(filter(lambda x: 'SEN2' in x and 'QAI' in x, files)))[-seq_len:]
-        
+
+        seq_len = min(seq_len, len(boa_filenames))
+
         dates = [datetime.datetime.strptime(s[:8], '%Y%m%d').date() for s in boa_filenames]
         days_since_t0 = np.array([(date - t0).days for date in dates])
 
@@ -238,27 +241,25 @@ class SBERTClassifier(LightningModule):
         sample_boa = read_img(os.path.join(input_folder, boa_filenames[0]), dim_ordering="HWC", dtype=np.int16)
         h,w,c = sample_boa.shape
         all_boas = np.empty((h,w,seq_len,c), dtype=np.int16)
-        if qai>0:
-            validity_mask = np.empty((h,w,seq_len,1), dtype=bool)
 
         # read all the files
         for (i,f) in enumerate(boa_filenames):
             fname = os.path.join(input_folder, f)
-            img = read_img(fname, dim_ordering="HWC", dtype=np.int16)
+            img = read_img(fname, dim_ordering="HWC", dtype=np.int32)
             all_boas[:,:,i,:] = img
-        
+
+        all_boas = all_boas.reshape((-1, seq_len, c))
+
         if qai > 0:
+            validity_mask = np.empty((h, w, seq_len, 1), dtype=bool)
             for (i,f) in enumerate(qais):
                 fname = os.path.join(input_folder, f)
-                img = read_img(fname, dim_ordering="HWC", dtype=np.uint16)
+                img = read_img(fname, dim_ordering="HWC", dtype=np.int32)
                 validity_mask[:,:,i,:] = (img & qai) == 0
 
             validity_mask = validity_mask.reshape((-1, seq_len))
             n_obs = np.sum(validity_mask, axis=1)
 
-        all_boas = all_boas.reshape((-1, seq_len, c))
-
-        if qai > 0:
             def pixel_generator():
                 i = 0
                 while i < all_boas.shape[0]:
@@ -280,7 +281,7 @@ class SBERTClassifier(LightningModule):
                     yield torch.from_numpy(all_boas[i]), torch.from_numpy(days_since_t0), torch.from_numpy(transformer_mask)
                     i += 1
 
-        gen = GeneratorDataset(pixel_generator)
+        gen = GeneratorDataset(pixel_generator())
         dl = DataLoader(gen, batch_size=batch_size, num_workers=num_workers, pin_memory=True)
         output = np.zeros(w*h, dtype=np.uint8)
 
@@ -288,7 +289,8 @@ class SBERTClassifier(LightningModule):
         print(f"0 / {w*h//batch_size}")
         with torch.no_grad():
             for (i,batch) in enumerate(dl):
-                print(f"{i} / {w * h // batch_size}")
+                if i%100 == 0:
+                    print(f"{i} / {w * h // batch_size}")
                 try:
                     boa, doy, mask = batch
                     boa = boa.to(self.device)
@@ -304,17 +306,18 @@ class SBERTClassifier(LightningModule):
 
         output = output.reshape((h, w))
 
-        if output_filepath is None:
-            if os.path.isdir(input_folder) and input_folder[-1] != os.sep:
-                input_folder += os.sep
+        if save:
+            if output_filepath is None:
+                if os.path.isdir(input_folder) and input_folder[-1] != os.sep:
+                    input_folder += os.sep
 
-            output_filename = input_folder.split(os.sep)[-2]
-            assert output_filename != "", "Calculated empty output file name, check input directory."
-            output_filepath = os.path.join(os.path.abspath(input_folder), f"{output_filename}.tif")
-        
-        sample_filepath = os.path.join(input_folder, boa_filenames[0])
-        print(f"Writing file {output_filepath}")
-        array_to_tif(output, output_filepath, src_raster=sample_filepath)
+                output_filename = input_folder.split(os.sep)[-2]
+                assert output_filename != "", "Calculated empty output file name, check input directory."
+                output_filepath = os.path.join(os.path.abspath(input_folder), f"{output_filename}.tif")
+
+            sample_filepath = os.path.join(input_folder, boa_filenames[0])
+            print(f"Writing file {output_filepath}")
+            array_to_tif(output, output_filepath, src_raster=sample_filepath)
         return output
 
 

@@ -10,26 +10,10 @@ class SBERTClassification(nn.Module):
     def __init__(self, sbert: SBERT, num_classes):
         super().__init__()
         self.sbert = sbert
-        self.classification = MulticlassClassification(self.sbert.hidden, num_classes)
+        self.linear = nn.Linear(self.sbert.d_model, num_classes)
 
-    def forward(self, x, doy, mask):
-        x = self.sbert(x, doy, mask)
-        return self.classification(x, mask)
-
-
-class MulticlassClassification(nn.Module):
-    def __init__(self, hidden, num_classes):
-        super().__init__()
-        # self.pooling = nn.MaxPool1d(64)
-        self.linear = nn.Linear(hidden, num_classes)
-
-    def forward(self, x, mask):
-        # x = self.pooling(x.permute(0, 2, 1)).squeeze()
-        # global max pooling across time dimension
-        # x = torch.max(x.permute(0, 2, 1), dim=-1).values
-        x = torch.mean(x.permute(0, 2, 1), dim=-1)
+    def forward(self, x, time, mask):
+        x = self.sbert(x, time, mask)
+        x = torch.mean(x.permute(0, 2, 1), dim=-1)  # average across time dimension
         x = self.linear(x)
         return x
-
-
-

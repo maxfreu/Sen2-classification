@@ -1,5 +1,7 @@
+import os
 import torch
 import sqlite3
+import duckdb
 import numpy as np
 import multiprocessing as mp
 import pandas as pd
@@ -118,7 +120,7 @@ class InMemoryImageClassificationDataset(Dataset):
 
 class InMemoryTimeSeriesDataset(Dataset):
     def __init__(self,
-                 sqlite_path,
+                 input_filepath,
                  dbname,
                  augmentation=None,
                  sequence_length=32,
@@ -127,6 +129,7 @@ class InMemoryTimeSeriesDataset(Dataset):
                  min_obs: int = 12,
                  class_mapping: dict = None,
                  return_mode: str = "random",
+                 pos_encode: str = "doy",
                  plot_ids: tuple = None,
                  num_workers: int = 0,
                  where: str = ""
@@ -134,8 +137,8 @@ class InMemoryTimeSeriesDataset(Dataset):
         """ In-memory dataset for time series classification.
 
         Args:
-            sqlite_path: Path to the sqlite dataset file
-            dbname: Name of the contained table
+            input_filepath: Path to the sqlite or parquet dataset file
+            dbname: Name of the contained table if input file is sqlite
             augmentation: Optional augmentation function that acts on a single BOA observation
             sequence_length: The maximum sequence length
             satellite_input_channels: Number of satellite image channels
@@ -144,35 +147,60 @@ class InMemoryTimeSeriesDataset(Dataset):
             class_mapping: Dictionary optionally mapping tree species ids to classes
             return_mode: Can be 'random' (default) to return a sequence with at maximum 'sequence_length' 
                 samples drawn from a random starting point in time onwards, 'single' to return data from a 
-                random single year, or 'last' to return at most the latest 'sequence_length' points.
+                random single year, 'last' to return at most the latest 'sequence_length' points or 'all' to return
+                all available data for a given tree.
+                WARNING: If you choose 'all', you have to ensure that the sequence length is long enough to store the
+                longest time series!
+            pos_encode: How to encode the temporal information. Can be either 'doy' (default) to give all time stamps as
+                day of year or 'absolute' to encode the number of days passed since 2015-01-01.
             plot_ids: Plot ids (from tnr field) to load; can be used for training / val selection
             num_workers: Dataloader worker count
             where: SQL Where clause to filter data while loading, e.g. `species > 100 AND is_pure = TRUE` to select only
                 deciduous trees from pure stands.
         """
-        if return_mode not in ("random", "single", "last"):
-            raise RuntimeError(f"Please provide the correct return mode; either random, single or last. Received {return_mode}")
+        if return_mode not in ("random", "single", "last", "all"):
+            raise RuntimeError(f"Please provide the correct return mode; either random, single, last or all. Received {return_mode}")
+        if pos_encode not in ("doy", "absolute"):
+            raise RuntimeError(f"Wrong position embedding. Choose doy or absolute. Received {pos_encode}")
         self.sequence_length = sequence_length
         self.augmentation = augmentation
         self.satellite_input_channels = satellite_input_channels
         self.min_obs = min_obs
         self.return_mode = return_mode
-        conn = sqlite3.connect(sqlite_path)
-        conn.text_factory = bytes  # this makes sqlite return strings as bytes that we can parse via numpy
-        # load all data or only some plots
+        self.pos_encode = pos_encode
+
+        input_filetype = os.path.splitext(os.path.basename(input_filepath))[1]
 
         columns = "tree_id, species, boa, qai, time, doy"
+        if input_filetype == ".sqlite":
+            conn = sqlite3.connect(input_filepath)
+            conn.text_factory = bytes  # this makes sqlite return strings as bytes that we can parse via numpy
 
-        if plot_ids is None:
-            if where:
-                self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname} WHERE {where}", conn)
+            # load all data or only some plots
+            if plot_ids is None:
+                if where:
+                    self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname} WHERE {where}", conn)
+                else:
+                    self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname}", conn)
             else:
-                self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname}", conn)
-        else:
-            if where:
-                self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname} WHERE tnr IN {tuple(plot_ids)} AND {where}", conn)
+                if where:
+                    self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname} WHERE tnr IN {tuple(plot_ids)} AND {where}", conn)
+                else:
+                    self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname} WHERE tnr IN {tuple(plot_ids)}", conn)
+
+            conn.close()
+
+        elif input_filetype == ".parquet" or input_filetype == ".parq":
+            if plot_ids is None:
+                if where:
+                    self.df = duckdb.query(f"select {columns} from '{input_filepath}' where {where}").df()
+                else:
+                    self.df = duckdb.query(f"select {columns} from '{input_filepath}'").df()
             else:
-                self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname} WHERE tnr IN {tuple(plot_ids)}", conn)
+                if where:
+                    self.df = duckdb.query(f"select {columns} from '{input_filepath}' WHERE tnr IN {tuple(plot_ids)} AND {where}").df()
+                else:
+                    self.df = duckdb.query(f"select {columns} from '{input_filepath}' WHERE tnr IN {tuple(plot_ids)}").df()
 
         self.df = self.df[(self.df.qai & quality_mask) == 0]
 
@@ -182,10 +210,10 @@ class InMemoryTimeSeriesDataset(Dataset):
         self.df.time = [datetime.date.fromtimestamp(t) for t in self.df.time]
         self.df["dayssinceepoch"] = [(t - datetime.date(2015,1,1)).days for t in self.df.time]
         self.df["year"] = [t.year for t in self.df.time]
+        self.df.sort_values("time", inplace=True)
         self.grouped_df = self.df.groupby("tree_id")
         self.tree_ids = list(self.grouped_df.groups.keys())
         np.random.shuffle(self.tree_ids)
-        conn.close()
 
         self.num_workers = num_workers if num_workers > 0 else 1
         self.class_mapping = class_mapping
@@ -219,7 +247,7 @@ class InMemoryTimeSeriesDataset(Dataset):
 
     def get_tree_data(self, tree_id):
         subgroup = self.grouped_df.get_group(tree_id)
-        subgroup = subgroup.sort_values("time")
+        # subgroup = subgroup.sort_values("time")
 
         # return single year or all available data
         if self.return_mode == "single":
@@ -248,8 +276,10 @@ class InMemoryTimeSeriesDataset(Dataset):
                 selection = subgroup[-self.sequence_length:]
             else:
                 selection = subgroup
+        elif self.return_mode == "all":
+            selection = subgroup
         else:
-            raise RuntimeError(f"Return mode must be one of random, single or last, but is {self.return_mode}")
+            raise RuntimeError(f"Return mode must be one of random, single, last or all, but is {self.return_mode}")
 
         n_obs = min(selection.shape[0], self.sequence_length)
 
@@ -263,21 +293,21 @@ class InMemoryTimeSeriesDataset(Dataset):
 
         times = np.zeros(self.sequence_length, dtype=int)
 
-        if self.return_mode:
+        if self.pos_encode == "doy":
             times[:n_obs] = selection.doy[:n_obs]
         else:
             # if we work with the entire time series, we take the
             # days since beginning of launch year of sentinel 2
             times[:n_obs] = selection.dayssinceepoch[:n_obs]
 
-        mask = np.zeros(self.sequence_length, dtype=int)
-        mask[:n_obs] = 1
+        mask = np.zeros(self.sequence_length, dtype=bool)
+        mask[n_obs:] = True
 
         cls = selection.species.iloc[0]
         if self.class_mapping is not None:
             cls = self.class_mapping[int(cls)]
 
-        return tree_id, boa, times, mask, self.class_index(cls)
+        return tree_id, boa / 10000, times, mask, self.class_index(cls)
 
     def __getitem__(self, item):
         tree_id = self.tree_ids[item]  # indirection to be able to index into the dataset with 0..len-1

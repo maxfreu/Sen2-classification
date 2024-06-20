@@ -1,4 +1,5 @@
 import os.path
+import pickle
 import time
 import torch
 import shutil
@@ -84,13 +85,15 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                  quality_mask: int = CLOUD_OR_NODATA,
                  class_mapping: dict[str, str] = None,
                  return_mode: str = "random",
+                 pos_encode: str = "doy",
                  num_workers: int = 8,
                  train_split: float = 0.7,
                  seed: int = 42,
                  where: str = "",
+                 pickle_path: str = "/tmp"
                  ):
         super().__init__()
-        self.sqlite_path = sqlite_path
+        self.input_filepath = sqlite_path
         self.dbname = dbname
         self.sequence_length = sequence_length
         self.satellite_input_channels = satellite_input_channels
@@ -98,10 +101,12 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.class_mapping = class_mapping
         self.return_mode = return_mode
+        self.pos_encode = pos_encode
         self.num_workers = num_workers
         self.train_split = train_split
         self.seed = seed
         self.where = where
+        self.pickle_path = pickle_path
         self.training_data = None
         self.val_data = None
         self.is_setup = False
@@ -109,9 +114,10 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.classes_ = None
 
     def prepare_data(self) -> None:
-        tmppath = f"/tmp/{self.dbname}.sqlite"
+        filename = os.path.basename(self.input_filepath)
+        tmppath = f"/tmp/{filename}"
         if not os.path.isfile(tmppath) or os.path.getsize(tmppath) == 0:
-            shutil.copy2(self.sqlite_path, tmppath)
+            shutil.copy2(self.input_filepath, tmppath)
 
     def get_random_train_val_ids(self):
         tmppath = f"/tmp/{self.dbname}.sqlite"
@@ -141,7 +147,8 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         if self.is_setup:
             return
         
-        tmppath = f"/tmp/{self.dbname}.sqlite"
+        filename = os.path.basename(self.input_filepath)
+        tmppath = f"/tmp/{filename}"
 
         print(f"Loading training dataset.")
         t0 = time.time()
@@ -153,8 +160,9 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                        self.quality_mask,
                                                        class_mapping=self.class_mapping,
                                                        return_mode=self.return_mode,
+                                                       pos_encode=self.pos_encode,
                                                        where=self.where + " AND is_train = TRUE" if self.where else "is_train = TRUE")
-        print(f"Loading training ds took {time.time() -t0}s.")
+        print(f"Loading training ds took {time.time() - t0}s.")
 
         print(f"Loading val dataset.")
         t0 = time.time()
@@ -165,8 +173,9 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                   quality_mask=self.quality_mask,
                                                   class_mapping=self.class_mapping,
                                                   return_mode=self.return_mode,
+                                                  pos_encode=self.pos_encode,
                                                   where=self.where + " AND is_train = FALSE" if self.where else "is_train = FALSE")
-        print("Classes in val / test set: ", np.unique(self.val_data.df["ba"]))
+        print("Classes in val / test set: ", np.unique(self.val_data.df["species"]))
         print(f"Loading val ds took {time.time() - t0}s.")
 
     def train_dataloader(self):
@@ -187,12 +196,6 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
             # in this case we have to get the train ids and look up the classes in via sql query
             raise NotImplementedError("class mapping must be given")
         
-        # if not self.is_setup:
-        #     self.prepare_data()
-        #     self.setup("fit")
-        #     self.is_setup = True
-        # return self.training_data.compute_class_weights()
-
     @property
     def classes(self):
         if self.class_mapping is not None:

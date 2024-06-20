@@ -5,24 +5,10 @@ from sen2classification import utils
 from sen2classification.classifiers import SBERTClassifier, MockSBERTClassifier
 from sen2classification.datamodules import TimeSeriesClassificationDataModule, MockTimeSeriesClassificationDataModule
 from pytorch_lightning.cli import LightningArgumentParser, LightningCLI
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
-import sqlite3
 
+torch.set_float32_matmul_precision("medium")
 
 #%%
-def save_pandas_as_sqlite(outfile, train_df, val_df, overwrite=False):
-    if os.path.exists(outfile) and not overwrite:
-        raise RuntimeError(f"Output file {outfile} exists. Set overwrite=True to if needed.")
-    else:
-        if os.path.exists(outfile) and overwrite:
-            os.remove(outfile)
-        conn = sqlite3.connect(outfile)
-        train_df.to_sql(name="train", con=conn)
-        val_df.to_sql(name="val", con=conn)
-        conn.close()
-
-
 class CLIWithWeightedLoss(LightningCLI):
     def add_arguments_to_parser(self, parser: LightningArgumentParser) -> None:
         """This is here just for plumbing; we link the number of classes in the dataset to 
@@ -54,17 +40,22 @@ cli.trainer.fit(cli.model, cli.datamodule)
 if cli.trainer.num_devices > 1:
     cli.instantiate_trainer(fast_dev_run=False, devices=1)
 
-# test only on the last year
-cli.datamodule.val_data.return_mode = "last"
-
 # and the best model
 best_model_path = cli.trainer.checkpoint_callback.best_model_path
 model = cli.model_class.load_from_checkpoint(best_model_path, **cli.config.model, classes=cli.datamodule.classes)
-cli.trainer.test(model, cli.datamodule)
-
 model = model.to("cuda" if torch.cuda.is_available() else "cpu")
-train_pred = model.predict_dataset(cli.datamodule.training_data)  # pandas dataframe
-val_pred   = model.predict_dataset(cli.datamodule.val_data)
 
 out_dir = cli.trainer.logger.log_dir
-save_pandas_as_sqlite(os.path.join(out_dir, "prediction.sqlite"), train_pred, val_pred, overwrite=True)
+
+for ret_mode in ("random", "last"):
+    for seq_len in (16, 32, 64, 128):
+        cli.datamodule.training_data.return_mode = ret_mode
+        cli.datamodule.val_data.return_mode = ret_mode
+
+        cli.datamodule.training_data.sequence_length = seq_len
+        cli.datamodule.val_data.sequence_length = seq_len
+
+        train_pred = model.test_on_dataloader(cli.datamodule.train_dataloader(), cli.trainer.logger, seq_len=seq_len, return_mode=ret_mode)  # pandas dataframe
+        val_pred   = model.test_on_dataloader(cli.datamodule.val_dataloader(),   cli.trainer.logger, seq_len=seq_len, return_mode=ret_mode)
+
+        utils.save_pandas_as_sqlite(os.path.join(out_dir, f"prediction_seq_len={seq_len}_ret_mode={ret_mode}.sqlite"), train_pred, val_pred, overwrite=True)

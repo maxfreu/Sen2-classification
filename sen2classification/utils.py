@@ -6,7 +6,20 @@ from osgeo import gdal, osr
 import osgeo.gdalnumeric as gdn
 from itertools import islice
 from torch.utils.data import IterableDataset
+import sqlite3
 gdal.UseExceptions()
+
+
+def save_pandas_as_sqlite(outfile, train_df, val_df, overwrite=False):
+    if os.path.exists(outfile) and not overwrite:
+        raise RuntimeError(f"Output file {outfile} exists. Set overwrite=True to if needed.")
+    else:
+        if os.path.exists(outfile) and overwrite:
+            os.remove(outfile)
+        conn = sqlite3.connect(outfile)
+        train_df.to_sql(name="train", con=conn)
+        val_df.to_sql(name="val", con=conn)
+        conn.close()
 
 
 def batched(iterable, n):

@@ -132,7 +132,7 @@ if __name__ == "__main__":
 
 
     print("Initialing SITS-BERT...")
-    sbert = SBERT(config.num_features, hidden=config.hidden_size, n_layers=config.layers,
+    sbert = SBERT(config.num_features, d_model=config.hidden_size, n_layers=config.layers,
                   attn_heads=config.attn_heads, dropout=config.dropout)
     if config.pretrain_path is not None:
         print("Loading pre-trained model parameters...")

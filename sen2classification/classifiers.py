@@ -17,6 +17,7 @@ from plotting import plot_confusion_matrix
 from .datasets import InMemoryTimeSeriesDataset
 import datetime
 from .utils import GeneratorDataset, read_img, array_to_tif
+from uuid import uuid4
 import rioxarray
 
 
@@ -111,17 +112,24 @@ class SBERTClassifier(LightningModule):
         self.cosine_init_period = cosine_init_period
 
         self.task = "binary" if self.num_classes == 2 else "multiclass"  # required for torchmetrics
-        if use_weighted_loss and loss_weights is not None:
-            self.loss_weights = torch.tensor(loss_weights)
-            # self.register_buffer("loss_weights", loss_weights)
-            self.loss_weights.requires_grad = False
+        # if use_weighted_loss and loss_weights is not None:
+        #     self.loss_weights = torch.tensor(loss_weights)
+        #     # self.register_buffer("loss_weights", loss_weights)
+        #     self.loss_weights.requires_grad = False
+        # else:
+        #     self.loss_weights = None
+        if use_weighted_loss:
+            assert loss_weights is not None
+            self.loss = torch.nn.CrossEntropyLoss(weight=torch.Tensor(loss_weights))
+        else:
+            self.loss = torch.nn.CrossEntropyLoss()
 
         self.sbert = SBERT(num_features=satellite_input_channels,
-                           hidden=hidden_dim,
+                           d_model=hidden_dim,
                            n_layers=transformer_layercount,
                            attn_heads=num_attention_heads,
                            max_embedding_size=max_embedding_size)
-        self.transformer = SBERTClassification(self.sbert, self.num_classes)
+        self.classifier = SBERTClassification(self.sbert, self.num_classes)
 
         metric = MetricCollection({'acc': Accuracy(task=self.task, num_classes=self.num_classes)})
         self.train_metric = metric.clone(prefix='train_')
@@ -131,22 +139,23 @@ class SBERTClassifier(LightningModule):
         self.test_cm = ConfusionMatrix(task=self.task, num_classes=self.num_classes)
 
     def forward(self, x):
-        return self.transformer(*x)
+        return self.classifier(*x)
     
-    def on_fit_start(self) -> None:
-        if self.loss_weights is not None:
-            self.loss_weights = self.loss_weights.to(dtype=self.dtype, device=self.device)
+    # def on_fit_start(self) -> None:
+    #     if self.loss_weights is not None:
+    #         self.loss_weights = self.loss_weights.to(dtype=self.dtype, device=self.device)
 
-    def on_train_start(self) -> None:
-        # log hyperparams
-        self.logger.log_hyperparams(self.hparams, {'train_acc_step': 0, 'val_acc': 0})
-        return super().on_train_start()
+    # def on_train_start(self) -> None:
+    #     # log hyperparams
+    #     self.logger.log_hyperparams(self.hparams, {'train_acc_step': 0, 'val_acc': 0})
+    #     return super().on_train_start()
     
     def shared_step(self, batch, batch_idx, metric):
         _, boa, doy, mask, y_true = batch
         y_pred = self((boa, doy, mask))
 
-        loss = cross_entropy(y_pred, y_true, weight=self.loss_weights)
+        # loss = cross_entropy(y_pred, y_true, weight=self.loss_weights)
+        loss = self.loss(y_pred, y_true)
 
         with torch.no_grad():
             y_pred_labels = torch.argmax(y_pred, dim=1)
@@ -159,43 +168,43 @@ class SBERTClassifier(LightningModule):
     
     def training_step(self, batch, batch_idx):
         loss = self.shared_step(batch, batch_idx, self.train_metric)
-        self.log("train_loss", loss.item(), on_epoch=True, sync_dist=True)
+        self.log("train_loss", loss, on_epoch=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss = self.shared_step(batch, batch_idx, self.valid_metric)
-        self.log("val_loss", loss.item(), on_epoch=True, sync_dist=True)
+        self.log("val_loss", loss, on_epoch=True, sync_dist=True)
         return loss
 
-    def test_step(self, batch, batch_idx):
-        _, boa, doy, mask, y_true = batch
-        y_pred = self((boa, doy, mask))
-        y_pred_labels = torch.argmax(y_pred, dim=1)
-
-        self.test_acc.update(y_pred_labels, y_true)
-        self.test_cm.update(y_pred_labels, y_true)
-
-    def on_test_end(self):
-        acc = self.test_acc.compute()
-        cm = self.test_cm.compute().cpu().numpy()
-
-        outpath = self.logger.log_dir
-        version = self.logger.version
-
-        with open(os.path.join(outpath, f"report_{version}.txt"), "w") as f:
-            f.write(str(self.classes) + "\n")
-            f.write(f"acc: {acc * 100:.1f}\n")
-
-        np.savetxt(os.path.join(outpath, f"cm_{version}.txt"), cm)
-
-        plot_confusion_matrix(cm, classes=self.classes, fmt=".0f",
-                              outfile=os.path.join(outpath, f"confmat_unnormalized_{version}.png"), fontsize=4)
-
-        plot_confusion_matrix(cm, classes=self.classes, fmt=".2f", normalize="precision",
-                              outfile=os.path.join(outpath, f"confmat_precision_{version}.png"), fontsize="xx-small")
-
-        plot_confusion_matrix(cm, classes=self.classes, fmt=".2f", normalize="recall",
-                              outfile=os.path.join(outpath, f"confmat_recall_{version}.png"), fontsize="xx-small")
+    # def test_step(self, batch, batch_idx):
+    #     _, boa, doy, mask, y_true = batch
+    #     y_pred = self((boa, doy, mask))
+    #     y_pred_labels = torch.argmax(y_pred, dim=1)
+    #
+    #     self.test_acc.update(y_pred_labels, y_true)
+    #     self.test_cm.update(y_pred_labels, y_true)
+    #
+    # def on_test_end(self):
+    #     acc = self.test_acc.compute()
+    #     cm = self.test_cm.compute().cpu().numpy()
+    #
+    #     outpath = self.logger.log_dir
+    #     version = self.logger.version
+    #
+    #     with open(os.path.join(outpath, f"report_{version}.txt"), "w") as f:
+    #         f.write(str(self.classes) + "\n")
+    #         f.write(f"acc: {acc * 100:.1f}\n")
+    #
+    #     np.savetxt(os.path.join(outpath, f"cm_{version}.txt"), cm)
+    #
+    #     plot_confusion_matrix(cm, classes=self.classes, fmt=".0f",
+    #                           outfile=os.path.join(outpath, f"confmat_unnormalized_{version}.png"), fontsize=4)
+    #
+    #     plot_confusion_matrix(cm, classes=self.classes, fmt=".2f", normalize="precision", title="Precision",
+    #                           outfile=os.path.join(outpath, f"confmat_precision_{version}.png"), fontsize="xx-small")
+    #
+    #     plot_confusion_matrix(cm, classes=self.classes, fmt=".2f", normalize="recall", title="Recall",
+    #                           outfile=os.path.join(outpath, f"confmat_recall_{version}.png"), fontsize="xx-small")
 
     def configure_optimizers(self) -> Any:
         optimizer = optim.Adam(params=self.parameters(), lr=self.lr)
@@ -206,13 +215,22 @@ class SBERTClassifier(LightningModule):
                      }
         return {"optimizer": optimizer, "lr_scheduler": lr_config}
     
-    def predict_dataset(self, ds: InMemoryTimeSeriesDataset, batch_size=128, num_workers=4):
+    def test_on_dataloader(self, dataloader, logger, seq_len, return_mode):
+        """Takes a dataloader, makes predictions on all samples, computes acc and confusion matrix, writes out result
+        text files and confusion matrix plots into the log dir. Returns pandas dataframe with predictions."""
         self.eval()
+        self.test_acc.reset()
+        self.test_cm.reset()
+        # all below to device calls are hacky and maybe not needed at all
+        self.test_acc = self.test_acc.to(self.device)
+        self.test_cm = self.test_cm.to(self.device)
+
         ids = []
         trues = []
         preds = []
+
         with torch.no_grad():
-            for i, batch in enumerate(DataLoader(ds, batch_size=batch_size, num_workers=num_workers)):
+            for batch in dataloader:
                 tree_ids, boa, doy, mask, y_true = batch
                 boa = boa.to(self.device)
                 doy = doy.to(self.device)
@@ -220,25 +238,60 @@ class SBERTClassifier(LightningModule):
                 y_pred = self((boa, doy, mask))
                 y_pred_labels = torch.argmax(y_pred, dim=1)
                 ids.extend(tree_ids.numpy())
+                self.test_acc.update(y_pred_labels.to(self.device), y_true.to(self.device))
+                self.test_cm.update(y_pred_labels.to(self.device), y_true.to(self.device))
                 preds.extend([self.classes[x] for x in y_pred_labels.cpu().numpy()])
                 trues.extend([self.classes[x] for x in y_true.cpu().numpy()])
+
+        acc = self.test_acc.compute()
+        cm = self.test_cm.compute().cpu().numpy()
+
+        outpath = logger.log_dir
+        version = logger.version
+
+        with open(os.path.join(outpath, f"report_v={version}_seq_len={seq_len}_ret_mode={return_mode}.txt"), "w") as f:
+            f.write(f"seq_len={seq_len}, ret_mode={return_mode}\n")
+            f.write(str(self.classes) + "\n")
+            f.write(f"acc: {acc * 100:.1f}\n")
+
+        np.savetxt(os.path.join(outpath, f"cm_v={version}_seq_len={seq_len}_ret_mode={return_mode}.txt"), cm)
+
+        plot_confusion_matrix(cm, classes=self.classes, fmt=".0f",
+                              outfile=os.path.join(outpath, f"confmat_unnormalized_v={version}_seq_len={seq_len}_ret_mode={return_mode}.png"), fontsize=4)
+
+        plot_confusion_matrix(cm, classes=self.classes, fmt=".2f", normalize="precision", title="Precision",
+                              outfile=os.path.join(outpath, f"confmat_precision_v={version}_seq_len={seq_len}_ret_mode={return_mode}.png"), fontsize="xx-small")
+
+        plot_confusion_matrix(cm, classes=self.classes, fmt=".2f", normalize="recall", title="Recall",
+                              outfile=os.path.join(outpath, f"confmat_recall_v={version}_seq_len={seq_len}_ret_mode={return_mode}.png"), fontsize="xx-small")
+
         return pd.DataFrame({"tree_id": ids, "y_true": trues, "y_pred": preds, "correct": np.array(trues) == np.array(preds)})
 
-    def predict_timeseries(self, input_folder, qai, seq_len, output_filepath=None, save=True, t0=datetime.date(2015, 1, 1), batch_size=16, num_workers=0):
+    def predict_timeseries(self, input_folder, qai, seq_len, doy_or_abstime="doy", output_filepath=None, save=True, t0=datetime.date(2015, 1, 1), batch_size=16, num_workers=0, div_by=10000):
         self.eval()
         files = os.listdir(input_folder)
-        boa_filenames = list(sorted(filter(lambda x: 'SEN2' in x and 'BOA' in x, files)))[-seq_len:]
-
+        boa_filenames = list(sorted(filter(lambda x: 'BOA' in x, files)))[-seq_len:]
+        # print(boa_filenames)
         if qai > 0:
-            qais = list(sorted(filter(lambda x: 'SEN2' in x and 'QAI' in x, files)))[-seq_len:]
+            qais = list(sorted(filter(lambda x: 'QAI' in x, files)))[-seq_len:]
+        # print(qais)
 
         seq_len = min(seq_len, len(boa_filenames))
+        # print(seq_len)
 
-        dates = [datetime.datetime.strptime(s[:8], '%Y%m%d').date() for s in boa_filenames]
-        days_since_t0 = np.array([(date - t0).days for date in dates])
+        # dates = [datetime.datetime.strptime(s[:8], '%Y%m%d').date() for s in boa_filenames]
+        dates = [datetime.datetime.strptime(s[6:16], '%Y-%m-%d').date() for s in boa_filenames]
+        if doy_or_abstime == "doy":
+            days_since_t0 = np.array([d.timetuple().tm_yday for d in dates])
+        elif doy_or_abstime == "abstime":
+            days_since_t0 = np.array([(date - t0).days for date in dates])
+        else:
+            raise RuntimeError(f"Argument doy_or_abstime must be either doy or abstime, not {doy_or_abstime}.")
+        # print(days_since_t0)
 
         print("Loading images")
         sample_boa = read_img(os.path.join(input_folder, boa_filenames[0]), dim_ordering="HWC", dtype=np.int16)
+        # print(sample_boa.shape)
         h,w,c = sample_boa.shape
         all_boas = np.empty((h,w,seq_len,c), dtype=np.int16)
 
@@ -265,38 +318,43 @@ class SBERTClassifier(LightningModule):
                 while i < all_boas.shape[0]:
                     n = n_obs[i]
                     mask = validity_mask[i]
-                    transformer_mask = np.zeros(seq_len, dtype=int)
-                    transformer_mask[:n] = 1
+                    transformer_mask = np.ones(seq_len, dtype=bool)
+                    transformer_mask[:n] = 0
                     this_pixels_times = np.zeros(seq_len, dtype=int)
                     this_pixels_times[:n] = days_since_t0[mask]
                     boa = np.zeros((seq_len, c), dtype=np.float32)
-                    boa[:n, :] = all_boas[i][mask]
+                    boa[:n, :] = all_boas[i][mask] / div_by
                     yield torch.from_numpy(boa), torch.from_numpy(this_pixels_times), torch.from_numpy(transformer_mask)
                     i += 1
         else:
             def pixel_generator():
                 i = 0
                 while i < all_boas.shape[0]:
-                    transformer_mask = np.ones(seq_len, dtype=int)
-                    yield torch.from_numpy(all_boas[i]), torch.from_numpy(days_since_t0), torch.from_numpy(transformer_mask)
+                    transformer_mask = np.zeros(seq_len, dtype=bool)
+                    yield torch.from_numpy(all_boas[i].astype(np.float32)  / div_by), torch.from_numpy(days_since_t0), torch.from_numpy(transformer_mask)
                     i += 1
 
         gen = GeneratorDataset(pixel_generator())
         dl = DataLoader(gen, batch_size=batch_size, num_workers=num_workers, pin_memory=True)
         output = np.zeros(w*h, dtype=np.uint8)
 
-        print("Starting prediction")
-        print(f"0 / {w*h//batch_size}")
+        # print("Starting prediction")
+        # print(f"0 / {w*h//batch_size}")
         with torch.no_grad():
             for (i,batch) in enumerate(dl):
                 if i%100 == 0:
                     print(f"{i} / {w * h // batch_size}")
                 try:
                     boa, doy, mask = batch
+                    # print(boa[0,:,0])
+                    # print(doy[0,:])
+                    # print(mask[0,:])
                     boa = boa.to(self.device)
                     doy = doy.to(self.device)
                     mask = mask.to(self.device)
-                    pred = torch.argmax(self((boa, doy, mask)), dim=1)
+                    pred_raw = self((boa, doy, mask))
+                    # print(pred_raw)
+                    pred = torch.argmax(pred_raw, dim=1)
                     start = i*batch_size
                     stop = start + pred.shape[0]
                     output[start:stop] = pred.cpu().numpy()
@@ -311,7 +369,7 @@ class SBERTClassifier(LightningModule):
                 if os.path.isdir(input_folder) and input_folder[-1] != os.sep:
                     input_folder += os.sep
 
-                output_filename = input_folder.split(os.sep)[-2]
+                output_filename = input_folder.split(os.sep)[-2] + "_pred_" + str(uuid4())[:4]
                 assert output_filename != "", "Calculated empty output file name, check input directory."
                 output_filepath = os.path.join(os.path.abspath(input_folder), f"{output_filename}.tif")
 
@@ -357,7 +415,7 @@ class MultiModalTreeClassifier(LightningModule):
         utils.change_resnet_input(self.cnn, 4)
 
         self.sbert = SBERT(num_features=satellite_input_channels,
-                           hidden=hidden_dim,
+                           d_model=hidden_dim,
                            n_layers=transformer_layercount,
                            attn_heads=num_attention_heads)
         self.transformer = SBERTClassification(self.sbert, self.num_classes)

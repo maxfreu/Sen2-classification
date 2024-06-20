@@ -12,24 +12,20 @@ class BERTEmbedding(nn.Module):
         sum of both features are output of BERTEmbedding
     """
 
-    def __init__(self, num_features, embedding_dim, max_embedding_size=366, dropout=0.1):
+    def __init__(self, num_features, embedding_dim, max_pos_embed_val=10*366, dropout=0.1):
         """
         :param feature_num: number of input features
         :param embedding_dim: embedding size of token embedding
         :param dropout: dropout rate
         """
         super().__init__()
-        self.input = nn.Linear(in_features=num_features, out_features=embedding_dim)
-        self.position = PositionalEncoding(d_model=embedding_dim, max_len=max_embedding_size)
+        self.embedding_dim = embedding_dim
+        self.input_embed = nn.Linear(in_features=num_features, out_features=embedding_dim)
+        self.pos_embed = PositionalEncoding(embedding_dim=embedding_dim, max_len=max_pos_embed_val)
         self.dropout = nn.Dropout(p=dropout)
-        self.embed_size = embedding_dim
 
     def forward(self, input_sequence, doy_sequence):
-        batch_size = input_sequence.size(0)
-        seq_length = input_sequence.size(1)
-        obs_embed = self.input(input_sequence)  # [batch_size, seq_length, embedding_dim]
-        x = obs_embed.repeat(1, 1, 2)           # [batch_size, seq_length, embedding_dim*2]
-        for i in range(batch_size):
-            x[i, :, self.embed_size:] = self.position(doy_sequence[i, :])     # [seq_length, embedding_dim]
-
-        return self.dropout(x)
+        embedded_input = self.input_embed(input_sequence)  # [batch_size, seq_length, embedding_dim]
+        embedded_pos = self.pos_embed(doy_sequence)
+        embedding = embedded_input + embedded_pos
+        return self.dropout(embedding)

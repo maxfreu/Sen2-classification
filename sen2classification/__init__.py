@@ -1,3 +1,3 @@
-from .classifiers import TreeClassifier
+from sen2classification.models.classifiers import TreeClassifier
 from .datamodules import ClassificationDataModule
 from .datasets import InMemoryImageClassificationDataset

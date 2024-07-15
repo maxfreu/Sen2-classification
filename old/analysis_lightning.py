@@ -6,7 +6,7 @@ from sklearn.metrics import confusion_matrix
 from plotting import plot_confusion_matrix
 from omegaconf import OmegaConf
 from sen2classification.datamodules import ClassificationDataModule
-from sen2classification.classifiers import TreeClassifier
+from sen2classification.models.classifiers import TreeClassifier
 from torchmetrics.functional import accuracy, precision, recall
 
 

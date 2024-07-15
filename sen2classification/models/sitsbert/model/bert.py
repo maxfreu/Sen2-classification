@@ -1,12 +1,10 @@
 import torch
 import torch.nn as nn
 from .embedding import BERTEmbedding
-from .transformer import TransformerBlock
-from torch.nn import TransformerEncoderLayer, TransformerEncoder
+from torch.nn import TransformerEncoderLayer, TransformerEncoder, LayerNorm
 
 
 class SBERT(nn.Module):
-
     def __init__(self, num_features, d_model, n_layers, attn_heads, max_embedding_size=366, dropout=0.1):
         """
         :param num_features: number of input features
@@ -22,8 +20,10 @@ class SBERT(nn.Module):
                                                 nhead=attn_heads,
                                                 dim_feedforward=4*d_model,
                                                 batch_first=True,
-                                                activation="gelu")
+                                                activation="gelu",
+                                                dropout=dropout)
         self.transformer_encoder = TransformerEncoder(encoder_layer, n_layers)
+        self.norm = LayerNorm(num_features)
 
     def forward(self, x, time, mask=None):
         """
@@ -32,6 +32,7 @@ class SBERT(nn.Module):
             time: (N,L) tensor containing the timestamps in days since some t0
             mask: (N, L) tensor containing a validity mask for the input sequence. 0 means valid, 1 means invalid.
         """
+        x = self.norm(x)
         x = self.embedding(input_sequence=x, doy_sequence=time)
         x = self.transformer_encoder(x, src_key_padding_mask=mask)
         return x

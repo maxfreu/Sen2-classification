@@ -2,7 +2,7 @@ import os
 import numpy as np
 import torch
 import pandas as pd
-from . import utils
+from sen2classification import utils
 from typing import Any
 from torch import optim
 from torch.utils.data import DataLoader
@@ -12,13 +12,12 @@ from torchvision.models import resnet18, ResNet18_Weights
 from torchvision.ops import MLP
 from torchmetrics.functional import accuracy, precision, recall
 from torchmetrics import Accuracy, ConfusionMatrix, MetricCollection
-from .sitsbert.model.classification_model import SBERT, SBERTClassification
-from plotting import plot_confusion_matrix
-from .datasets import InMemoryTimeSeriesDataset
+from sen2classification.models.sitsbert.model.classification_model import SBERT, SBERTClassification
+from sen2classification.plotting import plot_confusion_matrix
 import datetime
-from .utils import GeneratorDataset, read_img, array_to_tif
+from sen2classification.utils import GeneratorDataset, read_img, array_to_tif
 from uuid import uuid4
-import rioxarray
+from ..satellite_classifier import SatelliteClassifier
 
 
 #%%
@@ -132,14 +131,14 @@ class SBERTClassifier(LightningModule):
         self.classifier = SBERTClassification(self.sbert, self.num_classes)
 
         metric = MetricCollection({'acc': Accuracy(task=self.task, num_classes=self.num_classes)})
-        self.train_metric = metric.clone(prefix='train_')
-        self.valid_metric = metric.clone(prefix='val_')
+        self.train_metric = metric.clone(prefix='train/')
+        self.valid_metric = metric.clone(prefix='val/')
 
         self.test_acc = Accuracy(task=self.task, num_classes=self.num_classes)
         self.test_cm = ConfusionMatrix(task=self.task, num_classes=self.num_classes)
 
-    def forward(self, x):
-        return self.classifier(*x)
+    def forward(self, boa, time, mask):
+        return self.classifier(boa, time, mask)
     
     # def on_fit_start(self) -> None:
     #     if self.loss_weights is not None:
@@ -150,9 +149,9 @@ class SBERTClassifier(LightningModule):
     #     self.logger.log_hyperparams(self.hparams, {'train_acc_step': 0, 'val_acc': 0})
     #     return super().on_train_start()
     
-    def shared_step(self, batch, batch_idx, metric):
+    def shared_step(self, batch, metric):
         _, boa, doy, mask, y_true = batch
-        y_pred = self((boa, doy, mask))
+        y_pred = self(boa, doy, mask)
 
         # loss = cross_entropy(y_pred, y_true, weight=self.loss_weights)
         loss = self.loss(y_pred, y_true)
@@ -167,13 +166,13 @@ class SBERTClassifier(LightningModule):
         return loss
     
     def training_step(self, batch, batch_idx):
-        loss = self.shared_step(batch, batch_idx, self.train_metric)
-        self.log("train_loss", loss, on_epoch=True, sync_dist=True)
+        loss = self.shared_step(batch, self.train_metric)
+        self.log("train/loss", loss, on_epoch=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        loss = self.shared_step(batch, batch_idx, self.valid_metric)
-        self.log("val_loss", loss, on_epoch=True, sync_dist=True)
+        loss = self.shared_step(batch, self.valid_metric)
+        self.log("val/loss", loss, on_epoch=True, sync_dist=True)
         return loss
 
     # def test_step(self, batch, batch_idx):
@@ -235,7 +234,7 @@ class SBERTClassifier(LightningModule):
                 boa = boa.to(self.device)
                 doy = doy.to(self.device)
                 mask = mask.to(self.device)
-                y_pred = self((boa, doy, mask))
+                y_pred = self(boa, doy, mask)
                 y_pred_labels = torch.argmax(y_pred, dim=1)
                 ids.extend(tree_ids.numpy())
                 self.test_acc.update(y_pred_labels.to(self.device), y_true.to(self.device))
@@ -352,7 +351,7 @@ class SBERTClassifier(LightningModule):
                     boa = boa.to(self.device)
                     doy = doy.to(self.device)
                     mask = mask.to(self.device)
-                    pred_raw = self((boa, doy, mask))
+                    pred_raw = self(boa, doy, mask)
                     # print(pred_raw)
                     pred = torch.argmax(pred_raw, dim=1)
                     start = i*batch_size

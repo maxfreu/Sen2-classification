@@ -22,10 +22,10 @@ class BERTEmbedding(nn.Module):
         self.embedding_dim = embedding_dim
         self.input_embed = nn.Linear(in_features=num_features, out_features=embedding_dim)
         self.pos_embed = PositionalEncoding(embedding_dim=embedding_dim, max_len=max_pos_embed_val)
-        self.dropout = nn.Dropout(p=dropout)
+        # self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, input_sequence, doy_sequence):
         embedded_input = self.input_embed(input_sequence)  # [batch_size, seq_length, embedding_dim]
         embedded_pos = self.pos_embed(doy_sequence)
         embedding = embedded_input + embedded_pos
-        return self.dropout(embedding)
+        return embedding

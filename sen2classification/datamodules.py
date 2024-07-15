@@ -114,10 +114,11 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.classes_ = None
 
     def prepare_data(self) -> None:
-        filename = os.path.basename(self.input_filepath)
-        tmppath = f"/tmp/{filename}"
-        if not os.path.isfile(tmppath) or os.path.getsize(tmppath) == 0:
-            shutil.copy2(self.input_filepath, tmppath)
+        if os.path.isfile(self.input_filepath):
+            filename = os.path.basename(self.input_filepath)
+            tmppath = f"/tmp/{filename}"
+            if not os.path.isfile(tmppath) or os.path.getsize(tmppath) == 0:
+                shutil.copy2(self.input_filepath, tmppath)
 
     def get_random_train_val_ids(self):
         tmppath = f"/tmp/{self.dbname}.sqlite"
@@ -146,13 +147,17 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
     def setup(self, stage: str) -> None:
         if self.is_setup:
             return
-        
-        filename = os.path.basename(self.input_filepath)
-        tmppath = f"/tmp/{filename}"
+
+        if os.path.isfile(self.input_filepath):
+            filename = os.path.basename(self.input_filepath)
+            train_path = val_path = f"/tmp/{filename}"
+        else:
+            train_path = os.path.join(self.input_filepath, "train")
+            val_path = os.path.join(self.input_filepath, "val")
 
         print(f"Loading training dataset.")
         t0 = time.time()
-        self.training_data = InMemoryTimeSeriesDataset(tmppath,
+        self.training_data = InMemoryTimeSeriesDataset(train_path,
                                                        self.dbname,
                                                        self.augmentation,
                                                        self.sequence_length,
@@ -160,32 +165,32 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                        self.quality_mask,
                                                        class_mapping=self.class_mapping,
                                                        return_mode=self.return_mode,
-                                                       pos_encode=self.pos_encode,
+                                                       time_encoding=self.pos_encode,
                                                        where=self.where + " AND is_train = TRUE" if self.where else "is_train = TRUE")
         print(f"Loading training ds took {time.time() - t0}s.")
 
         print(f"Loading val dataset.")
         t0 = time.time()
-        self.val_data = InMemoryTimeSeriesDataset(tmppath,
+        self.val_data = InMemoryTimeSeriesDataset(val_path,
                                                   self.dbname,
                                                   sequence_length=self.sequence_length,
                                                   satellite_input_channels=self.satellite_input_channels,
                                                   quality_mask=self.quality_mask,
                                                   class_mapping=self.class_mapping,
                                                   return_mode=self.return_mode,
-                                                  pos_encode=self.pos_encode,
+                                                  time_encoding=self.pos_encode,
                                                   where=self.where + " AND is_train = FALSE" if self.where else "is_train = FALSE")
         print("Classes in val / test set: ", np.unique(self.val_data.df["species"]))
         print(f"Loading val ds took {time.time() - t0}s.")
 
     def train_dataloader(self):
-        return torch.utils.data.DataLoader(self.training_data, pin_memory=True, shuffle=True, batch_size=self.batch_size, num_workers=self.num_workers, drop_last=True)
+        return torch.utils.data.DataLoader(self.training_data, pin_memory=True, shuffle=True, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
 
     def val_dataloader(self):
-        return torch.utils.data.DataLoader(self.val_data, pin_memory=True, batch_size=self.batch_size, num_workers=self.num_workers)
+        return torch.utils.data.DataLoader(self.val_data, pin_memory=True, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
 
     def test_dataloader(self):
-        return torch.utils.data.DataLoader(self.val_data, pin_memory=True, batch_size=self.batch_size, num_workers=self.num_workers)
+        return torch.utils.data.DataLoader(self.val_data, pin_memory=True, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
 
     @property
     def num_classes(self):

@@ -1,7 +1,7 @@
 #! /bin/env python3
 import argparse
 import torch
-from sen2classification.classifiers import SBERTClassifier
+from sen2classification.models.classifiers import SBERTClassifier
 import datetime
 
 parser = argparse.ArgumentParser()

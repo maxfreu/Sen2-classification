@@ -1,5 +1,5 @@
 #%%
-from sen2classification.classifiers import MultiModalTreeClassifier
+from sen2classification.models.classifiers import MultiModalTreeClassifier
 from sen2classification.datamodules import MultiModalClassificationDataModule
 from pytorch_lightning.cli import LightningArgumentParser, LightningCLI
 # from pytorch_lightning.callbacks import ModelCheckpoint

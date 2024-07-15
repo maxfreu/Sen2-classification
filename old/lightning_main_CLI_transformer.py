@@ -1,9 +1,8 @@
 import os
-import sys
 import torch
 from sen2classification import utils
-from sen2classification.classifiers import SBERTClassifier, MockSBERTClassifier
-from sen2classification.datamodules import TimeSeriesClassificationDataModule, MockTimeSeriesClassificationDataModule
+from sen2classification.models.classifiers import SBERTClassifier
+from sen2classification.datamodules import TimeSeriesClassificationDataModule
 from pytorch_lightning.cli import LightningArgumentParser, LightningCLI
 
 torch.set_float32_matmul_precision("medium")

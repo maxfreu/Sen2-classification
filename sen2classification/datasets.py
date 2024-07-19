@@ -135,7 +135,9 @@ class InMemoryTimeSeriesDataset(Dataset):
                  time_encoding: str = "doy",
                  plot_ids: tuple = None,
                  num_workers: int = 0,
-                 where: str = ""
+                 where: str = "",
+                 mean = np.zeros(10),
+                 stddev = np.ones(10)
                  ):
         """ In-memory dataset for time series classification.
 
@@ -212,7 +214,8 @@ class InMemoryTimeSeriesDataset(Dataset):
 
         # convert the bytes to a numpy array
         # 16 bit is a storage format - we convert it to 32 bit for faster calculations at the cost of RAM
-        self.df.boa = [np.frombuffer(x, dtype=np.int16).astype(np.int32) for x in self.df.boa]
+        # normalization is applied here
+        self.df.boa = [(np.frombuffer(x, dtype=np.int16).astype(np.float32) - mean) / (stddev + 1e-7) for x in self.df.boa]
         self.df.time = [datetime.date.fromtimestamp(t) for t in self.df.time]
         self.df["dayssinceepoch"] = [(t - datetime.date(2015, 1, 1)).days for t in self.df.time]
         self.df["year"] = [t.year for t in self.df.time]
@@ -311,8 +314,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         if self.class_mapping is not None:
             cls = self.class_mapping[int(cls)]
 
-        # divide by 10k to convert from FORCE integers to reflectance
-        return tree_id, boa / 10000, times, mask, self.class_index(cls)
+        return tree_id, boa, times, mask, self.class_index(cls)
 
     def __getitem__(self, item):
         tree_id = self.tree_ids[item]  # indirection to be able to index into the dataset with 0..len-1

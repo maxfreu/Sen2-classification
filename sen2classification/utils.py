@@ -324,7 +324,9 @@ def load_and_prepare_timeseries_folder(input_folder: str,
                                        seq_len: int,
                                        time_encoding: str = "doy",
                                        t0: datetime.date = datetime.date(2015, 1, 1),
-                                       fname2date = lambda s: datetime.datetime.strptime(s[:8], '%Y%m%d').date()
+                                       fname2date = lambda s: datetime.datetime.strptime(s[:8], '%Y%m%d').date(),
+                                       tmin=datetime.date(0, 1, 1),
+                                       tmax=datetime.date(9999, 1, 1),
                                        ):
     """Loads all `seq_len` last BOA and QAI files from the given input folder. Depending on seq_len, \
     this needs lots of RAM.
@@ -332,10 +334,12 @@ def load_and_prepare_timeseries_folder(input_folder: str,
     Args:
         input_folder (str): The input folder path
         qai (int): A FORCE QAI binary flag
-        seq_len (int): Maximum sequence length to load
-        time_encoding (str): Either doy for day of year time encoding or 'absolute' for the days passed since t0
+        seq_len (int): Maximum sequence length to load. The found dates are filtered by tmin and tmax (default: no filtering) and then the last seq_len dates are loaded.
+        time_encoding (str): Either doy for day of year time encoding or 'absolute' for the days passed since t0.
         t0 (datetime.date): Initial date from which to calculate the absolute time encoding
         fname2date (callable): Function converting a file name string to a datetime.date object.
+        tmin (datetime.date): Minimum date to include (default year 0). Times are filtered as tmin <= t < tmax.
+        tmax (datetime.date): Maximum date to include (default year 9999). Times are filtered as tmin <= t < tmax.
 
     Returns:
         In case that QAI == 0:
@@ -345,13 +349,17 @@ def load_and_prepare_timeseries_folder(input_folder: str,
     assert time_encoding in ("doy", "absolute"), f"Please choose a valid time encoding: 'doy' for day of year or 'absolute' for days passed since t0"
     files = os.listdir(input_folder)
     assert len(files) > 0, f"No files found in input folder {input_folder}"
-    boa_filenames = list(sorted(filter(lambda x: 'BOA' in x, files)))[-seq_len:]
+    boa_filenames = np.array(sorted(filter(lambda x: 'BOA' in x, files)))
+    dates = np.array([fname2date(s) for s in boa_filenames])
+    valid_dates = [tmin <= d < tmax for d in dates][-seq_len:]
+    boa_filenames = boa_filenames[valid_dates]
+    dates = dates[valid_dates]
+
     if qai > 0:
-        qais = list(sorted(filter(lambda x: 'QAI' in x, files)))[-seq_len:]
+        qais = np.array(sorted(filter(lambda x: 'QAI' in x, files)))[valid_dates]
 
     seq_len = len(boa_filenames)
-
-    dates = [fname2date(s) for s in boa_filenames]
+    assert len(boa_filenames) == len(qais), f"Length of BOA and QAI time series differ ({len(boa_filenames)} vs {len(qais)})."
 
     if time_encoding == "doy":
         times = np.array([d.timetuple().tm_yday for d in dates])
@@ -361,7 +369,7 @@ def load_and_prepare_timeseries_folder(input_folder: str,
         # can't happen
         raise RuntimeError(f"Argument time_encoding must be either doy or absolute, not {time_encoding}.")
 
-    print("Loading images")
+    # print("Loading images")
     sample_boa = read_img(os.path.join(input_folder, boa_filenames[0]), dim_ordering="HWC", dtype=np.int16)
     h, w, c = sample_boa.shape
     all_boas = np.empty((h, w, seq_len, c), dtype=np.int16)

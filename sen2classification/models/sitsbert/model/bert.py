@@ -5,7 +5,7 @@ from torch.nn import TransformerEncoderLayer, TransformerEncoder, LayerNorm
 
 
 class SBERT(nn.Module):
-    def __init__(self, num_features, d_model, n_layers, attn_heads, max_embedding_size=366, dropout=0.1):
+    def __init__(self, num_features, d_model, n_layers, attn_heads, max_embedding_size=366, dropout=0.1, layernorm_on_input=False):
         """
         :param num_features: number of input features
         :param d_model: hidden size of the SITS-BERT model
@@ -23,7 +23,7 @@ class SBERT(nn.Module):
                                                 activation="gelu",
                                                 dropout=dropout)
         self.transformer_encoder = TransformerEncoder(encoder_layer, n_layers)
-        self.norm = LayerNorm(num_features)
+        self.norm = LayerNorm(num_features) if layernorm_on_input else torch.nn.Identity()
 
     def forward(self, x, time, mask=None):
         """

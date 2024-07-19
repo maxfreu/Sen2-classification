@@ -90,7 +90,9 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                  train_split: float = 0.7,
                  seed: int = 42,
                  where: str = "",
-                 pickle_path: str = "/tmp"
+                 pickle_path: str = "/tmp",
+                 mean=np.zeros(10),
+                 stddev=np.ones(10)
                  ):
         super().__init__()
         self.input_filepath = sqlite_path
@@ -107,6 +109,8 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.seed = seed
         self.where = where
         self.pickle_path = pickle_path
+        self.mean = mean
+        self.stddev = stddev
         self.training_data = None
         self.val_data = None
         self.is_setup = False
@@ -166,7 +170,9 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                        class_mapping=self.class_mapping,
                                                        return_mode=self.return_mode,
                                                        time_encoding=self.pos_encode,
-                                                       where=self.where + " AND is_train = TRUE" if self.where else "is_train = TRUE")
+                                                       where=self.where + " AND is_train = TRUE" if self.where else "is_train = TRUE",
+                                                       mean=self.mean,
+                                                       stddev=self.stddev)
         print(f"Loading training ds took {time.time() - t0}s.")
 
         print(f"Loading val dataset.")
@@ -179,7 +185,9 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                   class_mapping=self.class_mapping,
                                                   return_mode=self.return_mode,
                                                   time_encoding=self.pos_encode,
-                                                  where=self.where + " AND is_train = FALSE" if self.where else "is_train = FALSE")
+                                                  where=self.where + " AND is_train = FALSE" if self.where else "is_train = FALSE",
+                                                  mean=self.mean,
+                                                  stddev=self.stddev)
         print("Classes in val / test set: ", np.unique(self.val_data.df["species"]))
         print(f"Loading val ds took {time.time() - t0}s.")
 

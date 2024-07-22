@@ -132,6 +132,7 @@ class InMemoryTimeSeriesDataset(Dataset):
                  min_obs: int = 12,
                  class_mapping: dict = None,
                  return_mode: str = "random",
+                 return_year=None,
                  time_encoding: str = "doy",
                  plot_ids: tuple = None,
                  num_workers: int = 0,
@@ -156,6 +157,9 @@ class InMemoryTimeSeriesDataset(Dataset):
                 all available data for a given tree.
                 WARNING: If you choose 'all', you have to ensure that the sequence length is long enough to store the
                 longest time series!
+            return_year (int or None): If return mode is single, `return_year` selects a specific year for which to
+                return the data. Data will be returned, no matter how few it is. Default is None, which returns random
+                years.
             time_encoding: How to encode the temporal information. Can be either 'doy' (default) to give all time stamps as
                 day of year or 'absolute' to encode the number of days passed since 2015-01-01.
             plot_ids: Plot ids (from tnr field) to load; can be used for training / val selection
@@ -172,6 +176,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         self.satellite_input_channels = satellite_input_channels
         self.min_obs = min_obs
         self.return_mode = return_mode
+        self.return_year = return_year
         self.time_encoding = time_encoding
 
         input_filetype = os.path.splitext(os.path.basename(input_filepath))[1]
@@ -262,16 +267,19 @@ class InMemoryTimeSeriesDataset(Dataset):
         if self.return_mode == "single":
             year_group = subgroup.groupby("year")
             available_years = np.array(list(year_group.groups.keys()))
-            # select years with enough observations, so that the transformer has
-            # the chance to learn something
-            years_with_enough_obs = available_years[year_group.count().tnr >= self.min_obs]
 
-            if len(years_with_enough_obs) > 0:
-                random_year = np.random.choice(years_with_enough_obs)  # select random year as augmentation
+            if self.return_year is None:
+                # select years with enough observations, so that the transformer has
+                # the chance to learn something
+                years_with_enough_obs = available_years[year_group.count().tnr >= self.min_obs]
+
+                if len(years_with_enough_obs) > 0:
+                    year = np.random.choice(years_with_enough_obs)  # select random year as augmentation
+                else:
+                    year = np.random.choice(available_years)
             else:
-                random_year = np.random.choice(available_years)
-
-            selection = year_group.get_group(random_year)[:self.sequence_length]
+                year = self.return_year
+            selection = year_group.get_group(year)[:self.sequence_length]
         elif self.return_mode == "random":
             n = subgroup.shape[0]
             if n > self.sequence_length:

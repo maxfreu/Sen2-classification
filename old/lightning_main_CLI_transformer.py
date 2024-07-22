@@ -54,7 +54,7 @@ for ret_mode in ("random", "last"):
         cli.datamodule.training_data.sequence_length = seq_len
         cli.datamodule.val_data.sequence_length = seq_len
 
-        train_pred = model.test_on_dataloader(cli.datamodule.train_dataloader(), cli.trainer.logger, seq_len=seq_len, return_mode=ret_mode)  # pandas dataframe
-        val_pred   = model.test_on_dataloader(cli.datamodule.val_dataloader(),   cli.trainer.logger, seq_len=seq_len, return_mode=ret_mode)
+        train_pred = model.test_on_dataloader(cli.datamodule.train_dataloader(), cli.trainer.logger, seq_len=seq_len, year=ret_mode)  # pandas dataframe
+        val_pred   = model.test_on_dataloader(cli.datamodule.val_dataloader(), cli.trainer.logger, seq_len=seq_len, year=ret_mode)
 
         utils.save_pandas_as_sqlite(os.path.join(out_dir, f"prediction_seq_len={seq_len}_ret_mode={ret_mode}.sqlite"), train_pred, val_pred, overwrite=True)

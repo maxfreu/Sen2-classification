@@ -62,17 +62,19 @@ model = model.to("cuda" if torch.cuda.is_available() else "cpu")
 log_dir = cli.trainer.logger.log_dir
 version = cli.trainer.logger.version
 
-ret_mode = "last"
+ret_mode = "single"
+cli.datamodule.val_data.return_mode = ret_mode
+cli.datamodule.val_data.return_year = 2022
+year = 2022
 
 for seq_len in (16,32,64):
-    cli.datamodule.val_data.return_mode = ret_mode
     cli.datamodule.val_data.sequence_length = seq_len
 
     val_pred = model.test_on_dataloader(cli.datamodule.val_dataloader(),
                                         log_dir,
                                         version,
                                         seq_len=seq_len,
-                                        return_mode=ret_mode)
+                                        year=year)
 
     assert val_pred is not None
 
@@ -97,7 +99,10 @@ acc_expl, kl_div_expl = validate_exploratories(model,
                                                class_mapping=class_mapping,
                                                outpath=output_folder,
                                                time_encoding=time_encoding,
-                                               seq_len=seq_len)
+                                               seq_len=seq_len,
+                                               qai=cli.datamodule.quality_mask,
+                                               mean=cli.datamodule.mean,
+                                               stddev=cli.datamodule.stddev)
 
 #####################################
 # independent validation on treesat #
@@ -108,7 +113,11 @@ acc_treesat = validate_treesat(model,
                                class_mapping=class_mapping,
                                outpath=output_folder,
                                version=version,
-                               seq_len=seq_len)
+                               seq_len=seq_len,
+                               qai=cli.datamodule.quality_mask,
+                               mean=cli.datamodule.mean,
+                               stddev=cli.datamodule.stddev
+                               )
 
 report_outfile = os.path.join(log_dir, version, "validation_report.txt")
 with open(report_outfile, "w") as f:

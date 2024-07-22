@@ -67,7 +67,7 @@ class SatelliteClassifier(LightningModule):
         return loss
 
     @rank_zero_only
-    def test_on_dataloader(self, dataloader, outpath, version, seq_len, return_mode):
+    def test_on_dataloader(self, dataloader, outpath, version, seq_len, year):
         """Takes a dataloader, makes predictions on all samples, computes acc and confusion matrix, writes out result
         text files and confusion matrix plots into the log dir. Returns pandas dataframe with predictions."""
         self.eval()
@@ -100,30 +100,30 @@ class SatelliteClassifier(LightningModule):
 
         acc = tp / len(trues)
 
-        with open(os.path.join(outpath, f"report_v={version}_seq_len={seq_len}_ret_mode={return_mode}.txt"), "w") as f:
+        with open(os.path.join(outpath, f"report_v={version}_seq_len={seq_len}_year={year}.txt"), "w") as f:
             f.write(f"seq_len={seq_len}")
-            f.write(f"ret_mode={return_mode}\n")
+            f.write(f"year={year}\n")
             f.write(f"acc: {acc * 100:.1f}\n")
 
         with open(os.path.join(outpath, "classes.txt"), "w") as f:
             for (i,c) in zip(range(len(self.classes)), self.classes):
                 f.write(f"{i},{c}\n")
 
-        np.savetxt(os.path.join(outpath, f"cm_v={version}_seq_len={seq_len}_ret_mode={return_mode}.txt"), cm)
+        np.savetxt(os.path.join(outpath, f"cm_v={version}_seq_len={seq_len}_year={year}.txt"), cm)
 
         plot_confusion_matrix(cm, classes=self.classes, fmt=".0f",
                               outfile=os.path.join(outpath,
-                                                   f"confmat_unnormalized_v={version}_seq_len={seq_len}_ret_mode={return_mode}.png"),
+                                                   f"confmat_unnormalized_v={version}_seq_len={seq_len}_year={year}.png"),
                               fontsize=4)
 
         plot_confusion_matrix(cm, classes=self.classes, fmt=".2f", normalize="precision", title="Precision",
                               outfile=os.path.join(outpath,
-                                                   f"confmat_precision_v={version}_seq_len={seq_len}_ret_mode={return_mode}.png"),
+                                                   f"confmat_precision_v={version}_seq_len={seq_len}_year={year}.png"),
                               fontsize="xx-small")
 
         plot_confusion_matrix(cm, classes=self.classes, fmt=".2f", normalize="recall", title="Recall",
                               outfile=os.path.join(outpath,
-                                                   f"confmat_recall_v={version}_seq_len={seq_len}_ret_mode={return_mode}.png"),
+                                                   f"confmat_recall_v={version}_seq_len={seq_len}_year={year}.png"),
                               fontsize="xx-small")
 
         return pd.DataFrame(
@@ -133,15 +133,17 @@ class SatelliteClassifier(LightningModule):
                              input_folder,
                              qai,
                              seq_len,
-                             time_encoding="absolute",
                              output_filepath=None,
-                             save=True, t0=datetime.date(2015, 1, 1),
+                             save=True,
                              batch_size=128,
-                             div_by=10000,
+                             mean=np.zeros(10),
+                             stddev=np.ones(10) * 10000,
                              fname2date=lambda s: datetime.datetime.strptime(s[:8], '%Y%m%d').date(),
-                             verbose=False,
+                             time_encoding="absolute",
+                             t0=datetime.date(2015, 1, 1),
                              tmin=datetime.date(2015, 1, 1),
                              tmax=datetime.date(2024, 1, 1),
+                             verbose=False,
                              ):
         if verbose:
             print(f"Predicting on images in folder {input_folder}")
@@ -174,6 +176,9 @@ class SatelliteClassifier(LightningModule):
         time_torch = torch.zeros((batch_size, seq_len), device=self.device, dtype=torch.int32)
         mask_torch = torch.zeros((batch_size, seq_len), device=self.device, dtype=bool)
 
+        mean = torch.from_numpy(mean).to(self.device)
+        stddev = torch.from_numpy(stddev).to(self.device)
+
         output = torch.zeros(h * w, dtype=torch.uint8, device=self.device)
 
         # predict
@@ -202,7 +207,8 @@ class SatelliteClassifier(LightningModule):
                 boa_torch[:]  = torch.from_numpy(boa_batch)
                 time_torch[:] = torch.from_numpy(time_batch)
                 mask_torch[:] = torch.from_numpy(mask_batch)
-                boa_torch /= div_by  # here we can safely divide, as data is float32
+                boa_torch -= mean
+                boa_torch /= stddev + 1e-7
                 # mask_torch = torch.from_numpy(mask_batch).to(self.device)
                 pred = self(boa_torch, time_torch, mask_torch).argmax(dim=-1).to(torch.uint8)
                 output[start:stop] = pred

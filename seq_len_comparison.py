@@ -9,7 +9,6 @@ from validation_exploratories import validate_exploratories
 from validation_treesat import validate_treesat
 from pytorch_lightning.cli import LightningArgumentParser, LightningCLI
 
-
 torch.set_float32_matmul_precision("medium")
 
 
@@ -35,7 +34,6 @@ cli = CLIWithWeightedLoss(datamodule_class=TimeSeriesClassificationDataModule,
 
 cli.trainer.fit(cli.model, cli.datamodule)
 
-
 if cli.trainer.global_rank > 0:
     sys.exit()
 
@@ -43,18 +41,12 @@ if cli.trainer.global_rank > 0:
 # below is only test stuff #
 ############################
 print("Testing on validation dataloader")
-
-# test with only one device
-if cli.trainer.num_devices > 1:
-    cli.instantiate_trainer(fast_dev_run=False, devices=1)
-
 # We have linked the data to the model args above. These changes are not reflected in the cli.config
 # Therefore we have to redo these changes
 cli.config.model.init_args.num_classes = cli.datamodule.num_classes
 cli.config.model.init_args.classes = cli.datamodule.classes
 cli.config.model.init_args.loss_weights = cli.datamodule.class_weights
 
-# and the best model
 best_model_path = cli.trainer.checkpoint_callback.best_model_path
 model = type(cli.model).load_from_checkpoint(best_model_path, **cli.config.model.init_args)
 model = model.to("cuda" if torch.cuda.is_available() else "cpu")
@@ -62,8 +54,10 @@ model = model.to("cuda" if torch.cuda.is_available() else "cpu")
 log_dir = cli.trainer.logger.log_dir
 version = cli.trainer.logger.version
 
-ret_mode = "last"
+ret_mode = "single"
+year = 2022
 cli.datamodule.val_data.return_mode = ret_mode
+cli.datamodule.val_data.return_year = year
 
 for seq_len in (16,32,64):
     cli.datamodule.val_data.sequence_length = seq_len
@@ -72,11 +66,11 @@ for seq_len in (16,32,64):
                                         log_dir,
                                         version,
                                         seq_len=seq_len,
-                                        return_mode=ret_mode)
+                                        year=year)
 
     assert val_pred is not None
 
-    utils.save_pandas_as_sqlite(os.path.join(log_dir, f"prediction_seq_len={seq_len}_ret_mode={ret_mode}.sqlite"),
+    utils.save_pandas_as_sqlite(os.path.join(log_dir, f"prediction_seq_len={seq_len}_year={year}.sqlite"),
                                 [val_pred],
                                 ["val"],
                                 overwrite=True)
@@ -97,7 +91,10 @@ for seq_len in (16,32,64):
                                                    class_mapping=class_mapping,
                                                    outpath=output_folder,
                                                    time_encoding=time_encoding,
-                                                   seq_len=seq_len)
+                                                   seq_len=seq_len,
+                                                   qai=cli.datamodule.quality_mask,
+                                                   mean=cli.datamodule.mean,
+                                                   stddev=cli.datamodule.stddev)
 
     #####################################
     # independent validation on treesat #
@@ -108,7 +105,11 @@ for seq_len in (16,32,64):
                                    class_mapping=class_mapping,
                                    outpath=output_folder,
                                    version=version,
-                                   seq_len=seq_len)
+                                   seq_len=seq_len,
+                                   qai=cli.datamodule.quality_mask,
+                                   mean=cli.datamodule.mean,
+                                   stddev=cli.datamodule.stddev
+                                   )
 
     report_outfile = os.path.join(log_dir, version, "validation_report.txt")
     with open(report_outfile, "w") as f:

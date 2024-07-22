@@ -68,6 +68,9 @@ def validate_exploratories(model,
                            outpath,
                            time_encoding="absolute",
                            seq_len=128,
+                           qai=223,
+                           mean=np.zeros(10),
+                           stddev=np.ones(10) * 10000,
                            species_codes_csv="/data_hdd/bwi/baumarten.csv",
                            exploratories_file="/data_hdd/exploratories/treedata_2018.gpkg",
                            ):
@@ -77,14 +80,16 @@ def validate_exploratories(model,
     fname2date = lambda s: datetime.datetime.strptime(s[6:16], '%Y-%m-%d').date()
 
     preds = [model.predict_force_folder(os.path.join(input_folder, subfolder),
-                                   223,
-                                   seq_len,
-                                   time_encoding=time_encoding,
-                                   save=False,
-                                   batch_size=128,
-                                   tmin=datetime.date(2018, 1, 1),
-                                   tmax = datetime.date(2019, 1, 1),
-                                   fname2date=fname2date)
+                                        qai,
+                                        seq_len,
+                                        time_encoding=time_encoding,
+                                        save=False,
+                                        batch_size=128,
+                                        tmin=datetime.date(2018, 1, 1),
+                                        tmax = datetime.date(2019, 1, 1),
+                                        fname2date=fname2date,
+                                        mean=mean,
+                                        stddev=stddev)
              for subfolder in subfolders]
 
     bwi_species = pd.read_csv(species_codes_csv, encoding="ISO-8859-1", sep=";")[["ICode", "Gattung", "Art"]]

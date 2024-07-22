@@ -4,7 +4,7 @@ import numpy as np
 from sen2classification.plotting import plot_confusion_matrix
 
 
-def validate_treesat(model, treesat_dir, class_mapping, outpath, version, seq_len):
+def validate_treesat(model, treesat_dir, class_mapping, outpath, version, seq_len, qai, mean, stddev):
     model.eval()
 
     treesat_species_dict = {
@@ -46,7 +46,8 @@ def validate_treesat(model, treesat_dir, class_mapping, outpath, version, seq_le
             try:
                 tmin = datetime.date(year, 1, 1)
                 tmax = datetime.date(year+1, 1, 1)
-                pred = model.predict_force_folder(subfolder, 223, seq_len=seq_len, fname2date=l, save=False, tmin=tmin, tmax=tmax)
+                pred = model.predict_force_folder(subfolder, qai, seq_len=seq_len, fname2date=l, save=False,
+                                                  tmin=tmin, tmax=tmax, mean=mean, stddev=stddev)
                 pred = pred[2:-2, 2:-2]
                 bn = os.path.basename(subfolder)
                 true_species = "_".join(bn.split("_")[:2])

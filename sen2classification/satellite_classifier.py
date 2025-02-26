@@ -1,19 +1,25 @@
 import os
+from typing import Dict, Any, Optional
+
 import torch
 import datetime
 import numpy as np
 import pandas as pd
 
-from time import time
 from glob import glob
 from uuid import uuid4
+
+from torch.optim import AdamW
 from pytorch_lightning import LightningModule
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from torchmetrics import Accuracy, ConfusionMatrix, MetricCollection
-from sen2classification.plotting import plot_confusion_matrix
-from sen2classification.utils import GeneratorDataset, read_img, array_to_tif
+from sen2classification.utils import GeneratorDataset, read_img, array_to_tif, predict_on_batches
 from .utils import load_and_prepare_timeseries_folder, assemble_batch_cpu
 from sklearn.metrics import confusion_matrix
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingWarmRestarts, SequentialLR
+from schedulefree import AdamWScheduleFree
+from sen2classification.focalloss import FocalLoss
+from filelock import FileLock
 
 
 class SatelliteClassifier(LightningModule):
@@ -22,7 +28,11 @@ class SatelliteClassifier(LightningModule):
                  lr: float,
                  loss_weights: list = None,
                  use_weighted_loss: bool = False,
-                 classes: "list[str]" = None  # only needed for the test step
+                 classes: "list[str]" = None,  # only needed for the test step
+                 cosine_init_period: int = 0,
+                 warmup_steps: int = 15000,
+                 weight_decay: float = 1e-3,
+                 focalloss_gamma=0
                  ):
         super().__init__()
         self.num_classes = num_classes
@@ -30,17 +40,23 @@ class SatelliteClassifier(LightningModule):
         self.lr = lr
         self.loss_weights = loss_weights
         self.use_weighted_loss = use_weighted_loss
+        self.cosine_init_period = cosine_init_period
+        self.warmup_steps = warmup_steps
+        self.weight_decay = weight_decay
 
-        if use_weighted_loss:
-            assert loss_weights is not None
-            self.loss = torch.nn.CrossEntropyLoss(weight=torch.from_numpy(np.array(loss_weights)).to(torch.float32))
+        if focalloss_gamma == 0:
+            if use_weighted_loss:
+                assert loss_weights is not None
+                self.loss = torch.nn.CrossEntropyLoss(weight=torch.from_numpy(np.array(loss_weights)).to(torch.float32))
+            else:
+                self.loss = torch.nn.CrossEntropyLoss()
         else:
-            self.loss = torch.nn.CrossEntropyLoss()
+            self.loss = FocalLoss(focalloss_gamma)
 
         self.task = "binary" if self.num_classes == 2 else "multiclass"  # required for torchmetrics
         metric = MetricCollection({'acc': Accuracy(task=self.task, num_classes=self.num_classes)})
-        self.train_metric = metric.clone(prefix='train/')
-        self.valid_metric = metric.clone(prefix='val/')
+        self.train_metric = metric.clone(prefix='train_')
+        self.valid_metric = metric.clone(prefix='val_')
 
     def shared_step(self, batch, metric):
         _, boa, doy, mask, y_true = batch
@@ -48,7 +64,7 @@ class SatelliteClassifier(LightningModule):
         loss = self.loss(y_pred, y_true)
 
         with torch.no_grad():
-            y_pred_labels = torch.argmax(y_pred, dim=1)
+            y_pred_labels = torch.argmax(y_pred.detach(), dim=1)
 
         # torchmetrics are synced implicitly, no sync_dist needed
         # https://github.com/Lightning-AI/lightning/discussions/6501
@@ -58,18 +74,64 @@ class SatelliteClassifier(LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss = self.shared_step(batch, self.train_metric)
-        self.log("train/loss", loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log("train_loss", loss, on_step=True, on_epoch=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         loss = self.shared_step(batch, self.valid_metric)
-        self.log("val/loss", loss, on_epoch=True, sync_dist=True)
+        self.log("val_loss", loss, on_epoch=True, sync_dist=True)
         return loss
 
+    def set_optimizer_state(self, state: str):
+        opts = self.optimizers()
+        if not isinstance(opts, list):
+            opts = [opts]
+
+        for opt in opts:
+            if isinstance(opt, AdamWScheduleFree):
+                if state == "train":
+                    opt.train()
+                elif state == "eval":
+                    opt.eval()
+                else:
+                    raise ValueError(f"Unknown train state {state}")
+
+    def on_train_epoch_start(self) -> None:
+        self.set_optimizer_state("train")
+
+    def on_validation_epoch_start(self) -> None:
+        self.set_optimizer_state("eval")
+
+    def configure_optimizers(self):
+        optimizer = AdamWScheduleFree(self.parameters(), lr=self.lr, warmup_steps=self.warmup_steps)
+        return optimizer
+
+        # optimizer = AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        # if self.cosine_init_period > 0:
+        #     scheduler = CosineAnnealingWarmRestarts(optimizer, self.cosine_init_period, T_mult=2, eta_min=1e-6, last_epoch=-1)
+        #
+        #     def warmup(current_step: int):
+        #         return current_step / self.warmup_steps
+        #
+        #     warmup_scheduler = LambdaLR(optimizer, lr_lambda=warmup)
+        #     scheduler = SequentialLR(optimizer, [warmup_scheduler, scheduler], [self.warmup_steps])
+        #
+        #     return {"optimizer": optimizer,
+        #             "lr_scheduler": {
+        #                 "scheduler": scheduler,
+        #                 "interval": "step",
+        #                 }
+        #             }
+        # else:
+        #     return optimizer
+
     @rank_zero_only
-    def test_on_dataloader(self, dataloader, outpath, version, seq_len, year):
-        """Takes a dataloader, makes predictions on all samples, computes acc and confusion matrix, writes out result
-        text files and confusion matrix plots into the log dir. Returns pandas dataframe with predictions."""
+    def test_on_dataloader(self, dataloader):
+        """Takes a dataloader and makes predictions on all samples.
+
+        Returns:
+            accuracy, numpy confusion matrix, pandas dataframe with predictions.
+        """
         self.eval()
         tp = 0
         cm = np.zeros((self.num_classes, self.num_classes), dtype=int)
@@ -80,7 +142,8 @@ class SatelliteClassifier(LightningModule):
 
         with torch.no_grad():
             for i, batch in enumerate(dataloader):
-                print(f"{i + 1}/{len(dataloader)}")
+                if (i % 100) == 0:
+                    print(f"{i + 1}/{len(dataloader)}")
                 tree_ids, boa, doy, mask, y_true = batch
                 boa = boa.to(self.device)
                 doy = doy.to(self.device)
@@ -100,34 +163,13 @@ class SatelliteClassifier(LightningModule):
 
         acc = tp / len(trues)
 
-        with open(os.path.join(outpath, f"report_v={version}_seq_len={seq_len}_year={year}.txt"), "w") as f:
-            f.write(f"seq_len={seq_len}")
-            f.write(f"year={year}\n")
-            f.write(f"acc: {acc * 100:.1f}\n")
-
-        with open(os.path.join(outpath, "classes.txt"), "w") as f:
-            for (i,c) in zip(range(len(self.classes)), self.classes):
-                f.write(f"{i},{c}\n")
-
-        np.savetxt(os.path.join(outpath, f"cm_v={version}_seq_len={seq_len}_year={year}.txt"), cm)
-
-        plot_confusion_matrix(cm, classes=self.classes, fmt=".0f",
-                              outfile=os.path.join(outpath,
-                                                   f"confmat_unnormalized_v={version}_seq_len={seq_len}_year={year}.png"),
-                              fontsize=4)
-
-        plot_confusion_matrix(cm, classes=self.classes, fmt=".2f", normalize="precision", title="Precision",
-                              outfile=os.path.join(outpath,
-                                                   f"confmat_precision_v={version}_seq_len={seq_len}_year={year}.png"),
-                              fontsize="xx-small")
-
-        plot_confusion_matrix(cm, classes=self.classes, fmt=".2f", normalize="recall", title="Recall",
-                              outfile=os.path.join(outpath,
-                                                   f"confmat_recall_v={version}_seq_len={seq_len}_year={year}.png"),
-                              fontsize="xx-small")
-
-        return pd.DataFrame(
-            {"tree_id": ids, "y_true": trues, "y_pred": preds, "correct": np.array(trues) == np.array(preds)})
+        return (acc,
+                cm,
+                pd.DataFrame({"tree_id": ids,
+                              "y_true": trues,
+                              "y_pred": preds,
+                              "correct": np.array(trues) == np.array(preds)})
+                )
 
     def predict_force_folder(self,
                              input_folder,
@@ -136,88 +178,89 @@ class SatelliteClassifier(LightningModule):
                              output_filepath=None,
                              save=True,
                              batch_size=128,
-                             mean=np.zeros(10),
-                             stddev=np.ones(10) * 10000,
+                             mean=np.zeros(10, dtype=np.float32),
+                             stddev=np.ones(10, dtype=np.float32) * 10000,
                              fname2date=lambda s: datetime.datetime.strptime(s[:8], '%Y%m%d').date(),
                              time_encoding="absolute",
+                             apply_argmax=True,
+                             num_classes=0,
                              t0=datetime.date(2015, 1, 1),
-                             tmin=datetime.date(2015, 1, 1),
-                             tmax=datetime.date(2024, 1, 1),
+                             tmin_data=datetime.date(2015, 1, 1),
+                             tmax_data=datetime.date(2024, 1, 1),
+                             tmin_inference=None,
+                             tmax_inference=None,
                              verbose=False,
                              ):
+        """
+        Predicts on all images in a folder, saves the result as a tif file and returns the prediction as a numpy array.
+
+        Args:
+            input_folder: Input folder with images
+            qai: Quality Assurance Information bit flags
+            seq_len: Sequence length
+            output_filepath: Output file path
+            save: Whether to save the prediction as a tif file
+            batch_size: Batch size
+            mean: Mean of the training data
+            stddev: Standard deviation of the training data
+            fname2date: Function to convert filenames to dates
+            time_encoding: Whether the time encoding the network expects is absolute (calculated from t0) or relative (day of year)
+            apply_argmax (bool): Whether to apply argmax to the output, i.e. whether to convert soft classifications into hard decisions for one class
+            num_classes (int): Only applicable if apply_argmax=False. Number of classes the network outputs.
+            t0: Time origin
+            tmin_data: Starting point in time for loading the data
+            tmax_data: End point in time for loading the data
+            tmin_inference: Starting point in time for inference. If None, tmin_data is used.
+            tmax_inference: End point in time for inference (exclusive). If None, tmax_data is used.
+            verbose: Whether to print progress information
+
+        Returns:
+            Prediction as numpy array
+        """
         if verbose:
             print(f"Predicting on images in folder {input_folder}")
         self.eval()
+
+        if tmin_inference is None:
+            tmin_inference = tmin_data
+        if tmax_inference is None:
+            tmax_inference = tmax_data
+
+        if     tmin_inference < tmin_data \
+            or tmax_inference < tmin_data \
+            or tmin_inference > tmax_data \
+            or tmax_inference > tmax_data \
+            or tmin_inference > tmax_inference \
+            or tmin_data > tmax_data:
+            raise ValueError("Invalid time range for inference or data loading.")
+
         boa_filenames = glob(os.path.join(input_folder, "*.tif"))
-        # all_boas has shape (h*w, seq_len, c)
-        (h, w, c), all_boas, times, validity_mask, n_obs = load_and_prepare_timeseries_folder(input_folder,
-                                                                                              qai,
-                                                                                              seq_len,
-                                                                                              time_encoding,
-                                                                                              t0,
-                                                                                              fname2date=fname2date,
-                                                                                              tmin=tmin,
-                                                                                              tmax=tmax
-                                                                                              )
-        all_boas[all_boas < 0] = 0
-        # defer division to later as raw data is in uint16 and we dont want to waste space
 
-        if validity_mask is not None:
-            all_boas[np.logical_not(validity_mask)] = 0
+        # with FileLock("/home/max/copy_lock.lock") as lock:
+        # all_boas has shape (h*w, loaded images (sequence length), c)
+        (h, w, c), all_boas, times, inference_date_mask, validity_mask, n_obs = load_and_prepare_timeseries_folder(
+            input_folder,
+            qai,
+            seq_len,
+            time_encoding,
+            t0,
+            fname2date=fname2date,
+            tmin_data=tmin_data,
+            tmax_data=tmax_data,
+            tmin_inference=tmin_inference,
+            tmax_inference=tmax_inference,
+        )
 
-        batch_size = min(batch_size, h*w)
+        # (model, c, all_boas, times, validity_mask, n_obs, mean, stddev, batch_size,
+        #  inference_date_mask, verbose)
+        output = predict_on_batches(self, all_boas, times, validity_mask, n_obs, mean, stddev, batch_size,
+                                    inference_date_mask, verbose, apply_argmax, num_classes)
 
-        boa_batch  = np.zeros((batch_size, seq_len, c), dtype=np.float32)
-        time_batch = np.zeros((batch_size, seq_len), dtype=np.int32)
-        mask_batch = np.zeros((batch_size, seq_len), dtype=bool)
-
-        # pre-allocate data on GPU to recycle memory, boosts perf by ca 4%
-        boa_torch  = torch.zeros((batch_size, seq_len, c), device=self.device, dtype=torch.float32)
-        time_torch = torch.zeros((batch_size, seq_len), device=self.device, dtype=torch.int32)
-        mask_torch = torch.zeros((batch_size, seq_len), device=self.device, dtype=bool)
-
-        mean = torch.from_numpy(mean).to(self.device)
-        stddev = torch.from_numpy(stddev).to(self.device)
-
-        output = torch.zeros(h * w, dtype=torch.uint8, device=self.device)
-
-        # predict
-        t0 = time()
-        with torch.no_grad():
-            i = 0  # batch counter
-            start = 0
-            while start < h * w:
-                if i % 100 == 0 and verbose:
-                    print(f"{i} / {w * h // batch_size}")
-                stop = min(start + batch_size, h * w)
-                bs = stop - start
-                # adjust the size of the last batch
-                # lot of repetition, but needed to avoid allocations
-                if start + batch_size > h * w:
-                    boa_batch = np.zeros((bs, seq_len, c), dtype=np.float32)
-                    time_batch = np.zeros((bs, seq_len), dtype=np.int32)
-                    mask_batch = np.zeros((bs, seq_len), dtype=bool)
-                    boa_torch  = torch.zeros((bs, seq_len, c), device=self.device, dtype=torch.float32)
-                    time_torch = torch.zeros((bs, seq_len), device=self.device, dtype=torch.int32)
-                    mask_torch = torch.zeros((bs, seq_len), device=self.device, dtype=bool)
-
-                assemble_batch_cpu(boa_batch, time_batch, mask_batch, start, all_boas, n_obs, validity_mask, times)
-
-                # copy data over to GPU without allocations
-                boa_torch[:]  = torch.from_numpy(boa_batch)
-                time_torch[:] = torch.from_numpy(time_batch)
-                mask_torch[:] = torch.from_numpy(mask_batch)
-                boa_torch -= mean
-                boa_torch /= stddev + 1e-7
-                # mask_torch = torch.from_numpy(mask_batch).to(self.device)
-                pred = self(boa_torch, time_torch, mask_torch).argmax(dim=-1).to(torch.uint8)
-                output[start:stop] = pred
-                start += batch_size
-                i += 1
-
-        output = output.reshape(h, w).cpu().numpy()
-        if verbose:
-            print("Prediction time: ", time() - t0)
+        if apply_argmax:
+            output = output.reshape(h, w).cpu().numpy()
+        else:
+            # output is softmaxed
+            output = output.reshape(h, w, num_classes).cpu().numpy()
 
         if save:
             if output_filepath is None:
@@ -234,3 +277,6 @@ class SatelliteClassifier(LightningModule):
             array_to_tif(output, output_filepath, src_raster=sample_filepath)
 
         return output
+
+#%%
+""

@@ -18,8 +18,9 @@ def compute_class_shares(sub_df, num_classes):
     total_area = sub_df["area"].sum()
     indices = np.arange(num_classes)
     normalized_area = np.zeros(num_classes)
-    normalized_area[sub_df["output_index"]] = sub_df["area"] / total_area
-    return pd.DataFrame({"EP": [sub_df["EP"].iloc[0]] * num_classes, "output_index": indices, "normalized_area": normalized_area})
+    normalized_area[sub_df["y_true"]] = sub_df["area"] / total_area
+    return pd.DataFrame({"EP": [sub_df["EP"].iloc[0]] * num_classes, "y_true": indices, "normalized_area":
+        normalized_area})
 
 
 def make_plot(area_shares, normalized_countmap, plotnames, class_mapping, outfile):
@@ -45,9 +46,9 @@ def make_plot(area_shares, normalized_countmap, plotnames, class_mapping, outfil
 
 def kl_divergence(yp, yt):
     p = yp + 1e-7
-    p /= sum(yp)
+    p /= sum(p)
     q = yt + 1e-7
-    q /= sum(yt)
+    q /= sum(q)
     return np.sum(p * np.log(p/q))
 
 
@@ -62,11 +63,11 @@ def compute_kl_divergences(area_shares, normalized_countmap, plotnames):
 
 
 def validate_exploratories(model,
-                           input_folder,
+                           exploratories_dir,
                            class_mapping,
-                           # report_outfile,
                            outpath,
                            time_encoding="absolute",
+                           return_mode="single",
                            seq_len=128,
                            qai=223,
                            mean=np.zeros(10),
@@ -74,28 +75,38 @@ def validate_exploratories(model,
                            species_codes_csv="/data_hdd/bwi/baumarten.csv",
                            exploratories_file="/data_hdd/exploratories/treedata_2018.gpkg",
                            ):
-    num_classes = len(class_mapping)
-    subfolders = list(os.walk(input_folder))[0][1]
+    model = model.eval()
+    num_classes = len(set(class_mapping.values()))
+    subfolders = list(os.walk(exploratories_dir))[0][1]
     plotnames = [os.path.basename(f) for f in subfolders]
     fname2date = lambda s: datetime.datetime.strptime(s[6:16], '%Y-%m-%d').date()
 
-    preds = [model.predict_force_folder(os.path.join(input_folder, subfolder),
+    if return_mode=="single" or return_mode=="random":
+        tmin = datetime.date(2018, 1, 1)
+    elif return_mode == "double":
+        tmin = datetime.date(2017, 1, 1)
+    else:
+        raise ValueError(f"Expected return mode 'single', 'random' or 'double' but got {return_mode}")
+
+    preds = [model.predict_force_folder(os.path.join(exploratories_dir, subfolder),
                                         qai,
                                         seq_len,
                                         time_encoding=time_encoding,
                                         save=False,
                                         batch_size=128,
-                                        tmin=datetime.date(2018, 1, 1),
-                                        tmax = datetime.date(2019, 1, 1),
+                                        tmin_data=tmin,
+                                        tmax_data= datetime.date(2019, 1, 1),
                                         fname2date=fname2date,
                                         mean=mean,
                                         stddev=stddev)
              for subfolder in subfolders]
 
+    # read NFI species codes
     bwi_species = pd.read_csv(species_codes_csv, encoding="ISO-8859-1", sep=";")[["ICode", "Gattung", "Art"]]
     bwi_species = bwi_species[bwi_species["ICode"] < 900]
     bwi_species["latin"] = [str(g) + " " + str(s) for i, (g,s) in bwi_species[["Gattung", "Art"]].iterrows()]
-    species_dict = {sp: code for code, sp in zip(bwi_species["ICode"], bwi_species["latin"])}
+    species_dict = {sp: code for sp, code in zip(bwi_species["latin"], bwi_species["ICode"])}
+    # map latin names occurring in the exploratories to species codes
     missing = {
         "Acer spec": 140,
         "Alnus spec": 210,
@@ -114,29 +125,36 @@ def validate_exploratories(model,
         }
     species_dict = species_dict | missing
 
+    # load exploratories data and add complementary information
     df = gpd.read_file(exploratories_file)
     df["area"] = (df["d"] / 2 / 100)**2 * 3.141592654
     df["species"] = [s.replace("_", " ") for s in df["species"]]
     df["gattung"] = [s.split(" ")[0] for s in df["species"]]
     df["icode"] = [species_dict[sp] for sp in df["species"]]
-    df["output_index"] = [latin_to_output_index(ln, class_mapping, species_dict) for ln in df["species"]]
+    # expected NN output index for given latin name
+    df["y_true"] = [latin_to_output_index(ln, class_mapping, species_dict) for ln in df["species"]]
 
-    species_areas = df.groupby(["EP", "output_index"])["area"].sum().reset_index()
+    # compute total area per species per exploratory plot
+    species_areas = df.groupby(["EP", "y_true"])["area"].sum().reset_index()
+
+    # compute normalized area shares per species per exploratory plot
     area_shares = species_areas.groupby(["EP"]).apply(lambda x: compute_class_shares(x, num_classes)).droplevel("EP")
 
-    classes = [np.bincount(p.flatten()).argmax() for p in preds]
-    normalized_countmap = [np.bincount(p.flatten()) / np.bincount(p.flatten()).sum() for p in preds]
-    normalized_countmap = [np.pad(cm, (0, num_classes - len(cm))) for cm in normalized_countmap]
+    # get dominant species per plot based on basal area
     major_species = area_shares.sort_values("normalized_area").groupby(["EP"]).tail(1).sort_values("EP")
 
-    major_species["y_pred"] = np.zeros(len(major_species), dtype=int)
-    # major_species["icode"] = [species_dict[sp] for sp in major_species["species"]]
+    # get most frequent predicted class per plot
+    classes = [np.bincount(p.flatten()).argmax() for p in preds]
+    # normalize the countmaps to get an approximate share of the covered area
+    # this is needed to compare the distribution of species in the exploratories
+    # with the distribution of species in the predictions
+    normalized_countmap = [np.bincount(p.flatten()) / np.prod(np.shape(p)) for p in preds]
+    # pad with zeros, because not all classes are present in every prediction
+    normalized_countmap = [np.pad(cm, (0, num_classes - len(cm))) for cm in normalized_countmap]
 
-    for (plotname, cls_) in zip(plotnames, classes):
-        major_species["y_pred"][major_species["EP"] == plotname] = cls_
+    # relate each plot with its prediction
+    major_species["y_pred"] = major_species["EP"].map(dict(zip(plotnames, classes)))
 
-    # major_species["y_true"] = [abbrev_list.index(class_mapping[icode]) for icode in major_species["icode"]]
-    major_species = major_species.rename(columns={"output_index": "y_true"})
     acc = sum(major_species["y_true"] == major_species["y_pred"]) / len(major_species)
     kl_div = np.mean(compute_kl_divergences(area_shares, normalized_countmap, plotnames))
 

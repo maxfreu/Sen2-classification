@@ -1,8 +1,6 @@
-import os.path
-import pickle
 import time
 import torch
-import shutil
+import random
 import numpy as np
 from . import utils
 import pytorch_lightning as L
@@ -10,13 +8,16 @@ from torch.utils.data import Dataset
 from .datasets import InMemoryImageClassificationDataset, InMemoryTimeSeriesDataset, CLOUD_OR_NODATA
 from .datasets import MultiModalDataset
 import torchvision.transforms as T
-import pandas as pd
-import sqlite3
-from torch.utils.data import random_split
 
 
 def filepath_to_classname(path):
     return path.split('/')[-2]
+
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2 ** 32  # the initial seed differs for each worker
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 class ClassificationDataModule(L.LightningDataModule):
@@ -77,25 +78,30 @@ class ClassificationDataModule(L.LightningDataModule):
 
 class TimeSeriesClassificationDataModule(L.LightningDataModule):
     def __init__(self,
-                 sqlite_path: str,
+                 input_file: str,
                  dbname: str,
                  batch_size: int,
+                 val_file: str = "",
                  sequence_length: int = 32,
                  satellite_input_channels: int = 10,
                  quality_mask: int = CLOUD_OR_NODATA,
                  class_mapping: dict[str, str] = None,
                  return_mode: str = "random",
-                 pos_encode: str = "doy",
+                 time_encoding: str = "doy",
                  num_workers: int = 8,
                  train_split: float = 0.7,
                  seed: int = 42,
                  where: str = "",
+                 val_where: str = "none",
                  pickle_path: str = "/tmp",
                  mean=np.zeros(10),
-                 stddev=np.ones(10)
+                 stddev=np.ones(10) * 10000,
+                 train_ids=None,
+                 val_ids=None
                  ):
         super().__init__()
-        self.input_filepath = sqlite_path
+        self.input_filepath = input_file
+        self.val_file = val_file or input_file
         self.dbname = dbname
         self.sequence_length = sequence_length
         self.satellite_input_channels = satellite_input_channels
@@ -103,102 +109,116 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.class_mapping = class_mapping
         self.return_mode = return_mode
-        self.pos_encode = pos_encode
+        self.time_encoding = time_encoding
         self.num_workers = num_workers
         self.train_split = train_split
         self.seed = seed
         self.where = where
+        self.val_where = val_where if val_where != "none" else where
         self.pickle_path = pickle_path
-        self.mean = mean
-        self.stddev = stddev
+        self.mean = np.array(mean)
+        self.stddev = np.array(stddev)
         self.training_data = None
         self.val_data = None
         self.is_setup = False
         self.prepare_data_per_node = True
         self.classes_ = None
+        self.train_ids = train_ids
+        self.val_ids = val_ids
 
-    def prepare_data(self) -> None:
-        if os.path.isfile(self.input_filepath):
-            filename = os.path.basename(self.input_filepath)
-            tmppath = f"/tmp/{filename}"
-            if not os.path.isfile(tmppath) or os.path.getsize(tmppath) == 0:
-                shutil.copy2(self.input_filepath, tmppath)
-
-    def get_random_train_val_ids(self):
-        tmppath = f"/tmp/{self.dbname}.sqlite"
-        rstate = np.random.default_rng(self.seed)
-        conn = sqlite3.connect(tmppath)
-        tnrs = list(pd.read_sql_query(f"SELECT DISTINCT tnr FROM {self.dbname} WHERE ", conn).tnr)
-        rstate.shuffle(tnrs)
-        conn.close()
-
-        train_ids, val_ids = random_split(tnrs, [self.train_split, 1-self.train_split],
-                                          generator=torch.Generator().manual_seed(self.seed))
-        return train_ids, val_ids
-
-    def get_preselected_train_val_ids(self):
-        tmppath = f"/tmp/{self.dbname}.sqlite"
-        conn = sqlite3.connect(tmppath)
-        train_ids = list(pd.read_sql_query(f"SELECT DISTINCT tnr FROM {self.dbname} WHERE is_train==1", conn).tnr)
-        val_ids = list(pd.read_sql_query(f"SELECT DISTINCT tnr FROM {self.dbname} WHERE is_train==0", conn).tnr)
-        conn.close()
-
-        return train_ids, val_ids
-
-    def augmentation(self, boa_observation):
+    def train_augmentation(self, boa_observation):
         return boa_observation * (0.98 + np.random.rand(self.satellite_input_channels)*0.04)
 
-    def setup(self, stage: str) -> None:
+    def setup(self, stage=None) -> None:
         if self.is_setup:
             return
 
-        if os.path.isfile(self.input_filepath):
-            filename = os.path.basename(self.input_filepath)
-            train_path = val_path = f"/tmp/{filename}"
+        if self.train_ids is None:
+            # the brackets around where are fuckin important
+            # because of operator precedence!!!
+            train_where = f"({self.where}) AND is_train = TRUE" if self.where else "is_train = TRUE"
         else:
-            train_path = os.path.join(self.input_filepath, "train")
-            val_path = os.path.join(self.input_filepath, "val")
+            train_where = self.where
+
+        if self.val_ids is None:
+            val_where = f"({self.val_where}) AND is_train = FALSE" if self.val_where else "is_train = FALSE"
+        else:
+            val_where = self.val_where
 
         print(f"Loading training dataset.")
         t0 = time.time()
-        self.training_data = InMemoryTimeSeriesDataset(train_path,
+        self.training_data = InMemoryTimeSeriesDataset(self.input_filepath,
                                                        self.dbname,
-                                                       self.augmentation,
+                                                       self.train_augmentation,
                                                        self.sequence_length,
                                                        self.satellite_input_channels,
                                                        self.quality_mask,
                                                        class_mapping=self.class_mapping,
                                                        return_mode=self.return_mode,
-                                                       time_encoding=self.pos_encode,
-                                                       where=self.where + " AND is_train = TRUE" if self.where else "is_train = TRUE",
+                                                       time_encoding=self.time_encoding,
+                                                       where=train_where,
+                                                       plot_ids=self.train_ids,
                                                        mean=self.mean,
-                                                       stddev=self.stddev)
+                                                       stddev=self.stddev
+                                                       )
         print(f"Loading training ds took {time.time() - t0}s.")
 
         print(f"Loading val dataset.")
         t0 = time.time()
-        self.val_data = InMemoryTimeSeriesDataset(val_path,
+        self.val_data = InMemoryTimeSeriesDataset(self.val_file,
                                                   self.dbname,
                                                   sequence_length=self.sequence_length,
                                                   satellite_input_channels=self.satellite_input_channels,
                                                   quality_mask=self.quality_mask,
                                                   class_mapping=self.class_mapping,
                                                   return_mode=self.return_mode,
-                                                  time_encoding=self.pos_encode,
-                                                  where=self.where + " AND is_train = FALSE" if self.where else "is_train = FALSE",
+                                                  time_encoding=self.time_encoding,
+                                                  where=val_where,
+                                                  plot_ids=self.val_ids,
                                                   mean=self.mean,
-                                                  stddev=self.stddev)
+                                                  stddev=self.stddev
+                                                  )
         print("Classes in val / test set: ", np.unique(self.val_data.df["species"]))
         print(f"Loading val ds took {time.time() - t0}s.")
 
+        self.is_setup = True
+
     def train_dataloader(self):
-        return torch.utils.data.DataLoader(self.training_data, pin_memory=True, shuffle=True, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+        g = torch.Generator()
+        g.manual_seed(0)
+
+        return torch.utils.data.DataLoader(self.training_data,
+                                           pin_memory=True,
+                                           shuffle=True,
+                                           batch_size=self.batch_size,
+                                           num_workers=self.num_workers,
+                                           persistent_workers=False,
+                                           generator=g,
+                                           worker_init_fn=seed_worker)
 
     def val_dataloader(self):
-        return torch.utils.data.DataLoader(self.val_data, pin_memory=True, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+        g = torch.Generator()
+        g.manual_seed(0)
+
+        return torch.utils.data.DataLoader(self.val_data,
+                                           pin_memory=True,
+                                           batch_size=self.batch_size,
+                                           num_workers=self.num_workers,
+                                           persistent_workers=False,
+                                           generator=g,
+                                           worker_init_fn=seed_worker)
 
     def test_dataloader(self):
-        return torch.utils.data.DataLoader(self.val_data, pin_memory=True, batch_size=self.batch_size, num_workers=self.num_workers, persistent_workers=True)
+        g = torch.Generator()
+        g.manual_seed(0)
+
+        return torch.utils.data.DataLoader(self.val_data,
+                                           pin_memory=True,
+                                           batch_size=self.batch_size,
+                                           num_workers=self.num_workers,
+                                           persistent_workers=False,
+                                           generator=g,
+                                           worker_init_fn=seed_worker)
 
     @property
     def num_classes(self):
@@ -217,30 +237,13 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         else:
             raise NotImplementedError("class mapping must be given")
 
-    # @property
-    # def class_counts(self):
-    #     counts = []
-    #     if self.class_mapping is None:
-    #         mapped_classes = np.array(list(self.grouped_df.ba.first()))
-    #     else:
-    #         mapped_classes = np.array([self.class_mapping[int(ba)] for ba in np.array(list(self.grouped_df.ba.first()))])
-    #     for cls_ in self.classes:
-    #         counts.append((mapped_classes == cls_).sum())
-    #     return counts
-    
     @property
-    def class_weights(self):
+    def loss_weights(self):
         if not self.is_setup:
             self.prepare_data()
             self.setup("fit")
             self.is_setup = True
         return self.training_data.compute_class_weights()
-
-    # def teardown(self, stage: str):
-    #     try:
-    #         os.remove(f"/tmp/{self.dbname}.sqlite")
-    #     except FileNotFoundError:
-    #         pass
 
 
 class MockTimeSeriesClassificationDataModule(L.LightningDataModule):

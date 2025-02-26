@@ -15,9 +15,10 @@ class LinearModel(SatelliteClassifier):
                  use_weighted_loss=False,
                  loss_weights=None,
                  satellite_input_channels=10,
-                 classes: "list[str]" = None  # only needed for the test step
+                 classes: "list[str]" = None,  # only needed for the test step
+                 **kwargs
                  ):
-        super().__init__(num_classes, lr, loss_weights, use_weighted_loss, classes)
+        super().__init__(num_classes, lr, loss_weights, use_weighted_loss, classes, **kwargs)
         # self.save_hyperparameters({"max_time": max_time,
         #                            "num_classes":num_classes,
         #                            "lr":lr,

@@ -2,11 +2,10 @@ import os
 import sys
 
 import torch
-import datetime
 from sen2classification import utils
 from sen2classification.datamodules import TimeSeriesClassificationDataModule
-from validation_exploratories import validate_exploratories
-from validation_treesat import validate_treesat
+from experiments.validation.validation_exploratories import validate_exploratories
+from experiments.validation.validation_treesat import validate_treesat
 from pytorch_lightning.cli import LightningArgumentParser, LightningCLI
 
 
@@ -52,7 +51,7 @@ if cli.trainer.num_devices > 1:
 # Therefore we have to redo these changes
 cli.config.model.init_args.num_classes = cli.datamodule.num_classes
 cli.config.model.init_args.classes = cli.datamodule.classes
-cli.config.model.init_args.loss_weights = cli.datamodule.class_weights
+cli.config.model.init_args.loss_weights = cli.datamodule.loss_weights
 
 # and the best model
 best_model_path = cli.trainer.checkpoint_callback.best_model_path
@@ -63,12 +62,12 @@ log_dir = cli.trainer.logger.log_dir
 version = cli.trainer.logger.version
 
 ret_mode = "single"
-cli.datamodule.val_data.return_mode = ret_mode
-cli.datamodule.val_data.return_year = 2022
+cli.datamodule.train_data.time_encoding = ret_mode
+cli.datamodule.train_data.return_year = 2022
 year = 2022
 
 for seq_len in (16,32,64):
-    cli.datamodule.val_data.sequence_length = seq_len
+    cli.datamodule.train_data.sequence_length = seq_len
 
     val_pred = model.test_on_dataloader(cli.datamodule.val_dataloader(),
                                         log_dir,
@@ -93,9 +92,9 @@ output_folder = os.path.join(log_dir, version)
 
 seq_len = cli.datamodule.sequence_length
 class_mapping = cli.datamodule.class_mapping
-time_encoding = cli.datamodule.pos_encode
+time_encoding = cli.datamodule.time_encoding
 acc_expl, kl_div_expl = validate_exploratories(model,
-                                               input_folder=cli.config["validation"]["exploratories_dir"],
+                                               exploratories_dir=cli.config["validation"]["exploratories_dir"],
                                                class_mapping=class_mapping,
                                                outpath=output_folder,
                                                time_encoding=time_encoding,

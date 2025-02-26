@@ -4,7 +4,7 @@ from torch import nn, optim
 from torch.nn.functional import relu
 from torchmetrics.classification import Accuracy
 from ..satellite_classifier import SatelliteClassifier
-from .sitsbert.model.embedding.position import PositionalEncoding
+from .sitsbert.model.embedding.bert import BERTEmbedding, ConcatEmbedding
 
 
 class GRU(SatelliteClassifier):
@@ -22,16 +22,47 @@ class GRU(SatelliteClassifier):
                  cosine_init_period=3000,
                  classes=None,
                  embedding_dim=None,
+                 embedding_type="bert",
                  max_time=8*366,
-                 layernorm_on_input=False):
-        super().__init__(num_classes, lr, loss_weights, use_weighted_loss, classes)
+                 layernorm_on_input=False,
+                 **kwargs):
+        """ Instantiates a GRU model for time series classification.
+
+        Args:
+            satellite_input_channels (int): Number of input channels of the satellite data.
+            hidden_dim (int): Number of hidden units in the GRU.
+            num_layers (int): Number of layers in the GRU.
+            num_classes (int): Number of classes to classify.
+            loss_weights (list): Weights for the loss function.
+            use_weighted_loss (bool): Whether to use a weighted loss function.
+            dropout (float): Dropout rate.
+            fc_size (int): Size of the fully connected layer.
+            bidirectional (bool): Whether the GRU should be bidirectional.
+            lr (float): Learning rate.
+            cosine_init_period (int): Period of the cosine annealing learning rate schedule.
+            classes (list): List of class names.
+            embedding_dim (int): Dimension of the embedding. If None, no embedding is used.
+            embedding_type (str): Type of the embedding.
+            max_time (int): Maximum time value for the embedding.
+            layernorm_on_input (bool): Whether to use layer normalization on the input.
+            **kwargs: Additional keyword arguments.
+        """
+        super().__init__(num_classes, lr, loss_weights, use_weighted_loss, classes, **kwargs)
         self.cosine_init_period = cosine_init_period
         self.embed_time = True if embedding_dim else False
-        input_channels = embedding_dim if embedding_dim else satellite_input_channels
+        gru_input_channels = satellite_input_channels
         self.norm = nn.LayerNorm(satellite_input_channels) if layernorm_on_input else torch.nn.Identity()
         if embedding_dim:
-            self.pos_embed = PositionalEncoding(embedding_dim=embedding_dim, max_len=max_time)
-        self.gru = nn.GRU(input_channels, hidden_size=hidden_dim,
+            gru_input_channels = embedding_dim
+            if embedding_type == "bert":
+                self.pos_embed = BERTEmbedding(num_features=satellite_input_channels, embedding_dim=embedding_dim, max_pos_embed_val=max_time)
+            elif embedding_type == "concat":
+                assert embedding_dim % 2 == 0, "Embedding dim must be divisible by two if embedding type concat is chosen."
+                self.pos_embed = ConcatEmbedding(num_features=satellite_input_channels,
+                                                 embedding_dim=embedding_dim//2,
+                                                 max_pos_embed_val=max_time)
+
+        self.gru = nn.GRU(gru_input_channels, hidden_size=hidden_dim,
                           num_layers=num_layers, batch_first=True,
                           dropout=dropout, bidirectional=bidirectional)
         fc_in = hidden_dim * (1 + bidirectional)
@@ -39,14 +70,13 @@ class GRU(SatelliteClassifier):
         self.clf = nn.Linear(fc_size, num_classes)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, boa, times, mask):
+    def forward(self, boa, times, mask, validation_mask=None):
         z = self.norm(boa)
 
         if self.embed_time:
             z = self.pos_embed(z, times)
 
         z = nn.utils.rnn.pack_padded_sequence(z, torch.sum(torch.logical_not(mask), 1).cpu(), batch_first=True, enforce_sorted=False)
-        z = z.to(self.device)  # needed for a notebook ,don't know why
         z, h = self.gru(z)
         z, mask_lens = nn.utils.rnn.pad_packed_sequence(z, batch_first=True, total_length=mask.shape[1])
         z = z[torch.arange(len(mask_lens)), mask_lens-1]
@@ -55,16 +85,6 @@ class GRU(SatelliteClassifier):
         z = relu(z)
         z = self.clf(z)
         return z
-
-    def configure_optimizers(self):
-        optimizer = optim.AdamW(self.parameters(), lr=self.lr, weight_decay=1e-2)
-        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, self.cosine_init_period, T_mult=2, eta_min=1e-6, last_epoch=-1)
-        return {"optimizer": optimizer,
-                "lr_scheduler": {
-                    "scheduler": scheduler,
-                    "interval": "step",
-                    }
-                }
 
 
 class TimeSeriesModel(L.LightningModule):

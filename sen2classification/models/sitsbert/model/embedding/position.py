@@ -17,8 +17,11 @@ class PositionalEncoding(nn.Module):
         pe = torch.zeros(max_len, embedding_dim)
 
         position = torch.arange(max_len).unsqueeze(1)         # [max_len, 1]
+        # T0 * 2. ^ (range(-floor(Int, e // 3 * 2) + (e % 3 == 0), floor(Int, e // 3)) / e * 9)
+        steps = embedding_dim // 2
         # div_term = (torch.arange(0, embedding_dim, 2).float() * -(math.log(10000.0) / embedding_dim)).exp()  # [d_model/2,]
-        periods = year / (2 ** torch.arange(6, -3, -9/embedding_dim * 2))
+        periods = year * (2 ** (torch.arange(int(-steps/3*2) + (steps % 3 == 0), int(steps / 3) + 1) * 9 / steps))
+        # periods = year / (2 ** torch.arange(6, -3, -9/embedding_dim * 2))
 
         pe[:, 0::2] = torch.sin(2 * math.pi * position / periods)   # broadcasting to [max_len, d_model/2]
         pe[:, 1::2] = torch.cos(2 * math.pi * position / periods)   # broadcasting to [max_len, d_model/2]

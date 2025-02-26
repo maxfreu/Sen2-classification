@@ -1,8 +1,5 @@
-import time
-import glob
 import os
 import torch
-import numba
 import sqlite3
 import duckdb
 import numpy as np
@@ -76,8 +73,8 @@ class InMemoryImageClassificationDataset(Dataset):
 
         self.num_classes = len(self.classes)
 
-        rstate = np.random.RandomState(seed=seed)
-        rstate.shuffle(self.files)
+        rng = np.random.default_rng(seed=seed)
+        rng.shuffle(self.files)
 
         # decompress images in parallel and put them onto the desired device
         # this is still slow due to pickling and unpickling
@@ -137,8 +134,9 @@ class InMemoryTimeSeriesDataset(Dataset):
                  plot_ids: tuple = None,
                  num_workers: int = 0,
                  where: str = "",
-                 mean = np.zeros(10),
-                 stddev = np.ones(10)
+                 eliminate_nodata: bool = False,
+                 mean=np.zeros(10),
+                 stddev=np.ones(10) * 10000,
                  ):
         """ In-memory dataset for time series classification.
 
@@ -153,8 +151,8 @@ class InMemoryTimeSeriesDataset(Dataset):
             class_mapping: Dictionary optionally mapping tree species ids to classes
             return_mode: Can be 'random' (default) to return a sequence with at maximum 'sequence_length' 
                 samples drawn from a random starting point in time onwards, 'single' to return data from a 
-                random single year, 'last' to return at most the latest 'sequence_length' points or 'all' to return
-                all available data for a given tree.
+                random single year, 'double' to return data from two consecutive years, 'last' to return at most the
+                latest 'sequence_length' points or 'all' to return all available data for a given tree.
                 WARNING: If you choose 'all', you have to ensure that the sequence length is long enough to store the
                 longest time series!
             return_year (int or None): If return mode is single, `return_year` selects a specific year for which to
@@ -166,8 +164,11 @@ class InMemoryTimeSeriesDataset(Dataset):
             num_workers: Dataloader worker count
             where: SQL Where clause to filter data while loading, e.g. `species > 100 AND is_pure = TRUE` to select only
                 deciduous trees from pure stands.
+            eliminate_nodata: Whether to remove all records where the first BOA band has a value smaller than -5000.
+            mean: Numpy vector representing the band-wise mean of the data. Is used for normalization.
+            stddev: Numpy vector representing the band-wise standard deviation of the data. Is used for normalization.
         """
-        if return_mode not in ("random", "single", "last", "all"):
+        if return_mode not in ("random", "single", "double", "last", "all"):
             raise RuntimeError(f"Please provide the correct return mode; either random, single, last or all. Received {return_mode}")
         if time_encoding not in ("doy", "absolute"):
             raise RuntimeError(f"Wrong position embedding. Choose doy or absolute. Received {time_encoding}")
@@ -178,10 +179,67 @@ class InMemoryTimeSeriesDataset(Dataset):
         self.return_mode = return_mode
         self.return_year = return_year
         self.time_encoding = time_encoding
+        self.df = self.load_data(input_filepath, dbname, where, plot_ids)
+        self.df = self.df[(self.df.qai & quality_mask) == 0]
 
+        # 16 bit is a storage format - we convert it to 32 bit for faster calculations at the cost of RAM
+        # mean = mean.astype(np.float32)
+        # inv_stddev = 1 / (stddev.astype(np.float32) + 1e-7)
+        # self.df.boa = [(np.frombuffer(x, dtype=np.int16).astype(np.float32) - mean) * inv_stddev for x in self.df.boa]
+        # convert the bytes to a numpy array
+        self.df.boa = self.convert_bytearrays_to_numpy(self.df.boa, mean, stddev)
+
+        # throw out all values smaller -5000
+        # would be faster to remove all this in the file itself...
+        if eliminate_nodata:
+            self.df = self.df[[x[0] > -5000 for x in self.df.boa]]
+
+        self.df.time = [datetime.date.fromtimestamp(t) for t in self.df.time]
+        self.df["dayssinceepoch"] = [(t - datetime.date(2015, 1, 1)).days for t in self.df.time]
+        self.df["year"] = [t.year for t in self.df.time]
+
+        # throw out all disturbance years before the NFI
+        self.df.loc[self.df['disturbance_year'] < 2011, 'disturbance_year'] = 9999
+
+        # filter out all records that either
+        # come after a disturbance or
+        # for which a disturbance has happened between 2011 and 2014 (before the image acquisition period)
+        self.df = self.df[np.logical_and(self.df.year < self.df.disturbance_year,
+                                         np.logical_not(
+                                             (self.df.disturbance_year >= 2011) & (self.df.disturbance_year <= 2014)))]
+        # or that are spruce and not continuously present until 2022
+        self.df = self.df[np.logical_or(self.df.species != 10, self.df.present_2022)]
+        self.df = self.df.drop(["disturbance_year", "present_2022", "qai"], axis=1)
+        self.df.sort_values("time", inplace=True)
+        self.df = self.df.drop(["time"], axis=1)
+        self.grouped_df = self.df.groupby("tree_id")
+        self.tree_ids = np.array(list(self.grouped_df.groups.keys()))
+        rng = np.random.default_rng(seed=42)
+        rng.shuffle(self.tree_ids)
+
+        self.num_workers = num_workers if num_workers > 0 else 1
+        self.class_mapping = class_mapping
+        if class_mapping is not None:
+            self.classes = list(sorted(set(class_mapping.values())))
+        else:
+            self.classes = list(sorted(self.df.species.unique()))
+
+        self.num_classes = len(self.classes)
+
+    @staticmethod
+    def convert_bytearrays_to_numpy(bytearray_series, mean, stddev):
+        mean = np.array(mean)
+        stddev = np.array(stddev)
+        inv_stddev = (1 / (stddev + 1e-7)).astype(np.float32)
+        concatenated_bytes = b''.join(bytearray_series.to_list())
+        boa = np.frombuffer(concatenated_bytes, dtype=np.int16).astype(np.float32).reshape(len(bytearray_series), -1)
+        boa = (boa - mean) * inv_stddev
+        return list(boa)
+
+    def load_data(self, input_filepath, dbname, where, plot_ids):
         input_filetype = os.path.splitext(os.path.basename(input_filepath))[1]
 
-        columns = "tree_id, species, boa, qai, time, doy"
+        columns = "tree_id, species, boa, qai, time, doy, disturbance_year, present_2022"
         if input_filetype == ".sqlite":
             conn = sqlite3.connect(input_filepath)
             conn.text_factory = bytes  # this makes sqlite return strings as bytes that we can parse via numpy
@@ -195,7 +253,7 @@ class InMemoryTimeSeriesDataset(Dataset):
             else:
                 if where:
                     self.df = pd.read_sql_query(
-                        f"SELECT {columns} FROM {dbname} WHERE tnr IN {tuple(plot_ids)} AND {where}", conn)
+                        f"SELECT {columns} FROM {dbname} WHERE tnr IN {tuple(plot_ids)} AND ({where})", conn)
                 else:
                     self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname} WHERE tnr IN {tuple(plot_ids)}", conn)
 
@@ -210,33 +268,12 @@ class InMemoryTimeSeriesDataset(Dataset):
             else:
                 if where:
                     self.df = duckdb.query(
-                        f"select {columns} from '{input_filepath}' WHERE tnr IN {tuple(plot_ids)} AND {where}").df()
+                        f"select {columns} from '{input_filepath}' WHERE tnr IN {tuple(plot_ids)} AND ({where})").df()
                 else:
                     self.df = duckdb.query(
                         f"select {columns} from '{input_filepath}' WHERE tnr IN {tuple(plot_ids)}").df()
 
-        self.df = self.df[(self.df.qai & quality_mask) == 0]
-
-        # convert the bytes to a numpy array
-        # 16 bit is a storage format - we convert it to 32 bit for faster calculations at the cost of RAM
-        # normalization is applied here
-        self.df.boa = [(np.frombuffer(x, dtype=np.int16).astype(np.float32) - mean) / (stddev + 1e-7) for x in self.df.boa]
-        self.df.time = [datetime.date.fromtimestamp(t) for t in self.df.time]
-        self.df["dayssinceepoch"] = [(t - datetime.date(2015, 1, 1)).days for t in self.df.time]
-        self.df["year"] = [t.year for t in self.df.time]
-        self.df.sort_values("time", inplace=True)
-        self.grouped_df = self.df.groupby("tree_id")
-        self.tree_ids = list(self.grouped_df.groups.keys())
-        np.random.shuffle(self.tree_ids)
-
-        self.num_workers = num_workers if num_workers > 0 else 1
-        self.class_mapping = class_mapping
-        if class_mapping is not None:
-            self.classes = list(sorted(set(class_mapping.values())))
-        else:
-            self.classes = list(sorted(self.df.species.unique()))
-
-        self.num_classes = len(self.classes)
+        return self.df
 
     def class_index(self, classname):
         """Returns the numerical ID of a class."""
@@ -257,21 +294,19 @@ class InMemoryTimeSeriesDataset(Dataset):
         return counts
 
     def compute_class_weights(self):
-        return len(self) / np.array(self.class_counts())
+        return len(self) / (np.array(self.class_counts()) + 1)
 
+    # @profile
     def get_tree_data(self, tree_id):
         subgroup = self.grouped_df.get_group(tree_id)
-        # subgroup = subgroup.sort_values("time")
 
-        # return single year or all available data
         if self.return_mode == "single":
-            year_group = subgroup.groupby("year")
-            available_years = np.array(list(year_group.groups.keys()))
+            available_years, counts = np.unique(subgroup.year, return_counts=True)
 
             if self.return_year is None:
                 # select years with enough observations, so that the transformer has
                 # the chance to learn something
-                years_with_enough_obs = available_years[year_group.count().tnr >= self.min_obs]
+                years_with_enough_obs = available_years[counts > self.min_obs]
 
                 if len(years_with_enough_obs) > 0:
                     year = np.random.choice(years_with_enough_obs)  # select random year as augmentation
@@ -279,7 +314,25 @@ class InMemoryTimeSeriesDataset(Dataset):
                     year = np.random.choice(available_years)
             else:
                 year = self.return_year
-            selection = year_group.get_group(year)[:self.sequence_length]
+            # selection = year_group.get_group(year)[:self.sequence_length]
+            selection = subgroup[subgroup.year == year]
+        elif self.return_mode == "double":
+            available_years, counts = np.unique(subgroup.year, return_counts=True)
+
+            if len(available_years) > 1:
+                if self.return_year is None:
+                    first_year_index = np.random.randint(low=0, high=len(available_years)-1)
+                    first_year = available_years[first_year_index]
+                    second_year = available_years[first_year_index+1]
+                else:
+                    first_year = self.return_year - 1
+                    second_year = self.return_year
+
+                first_year_data  = subgroup[subgroup.year == first_year]
+                second_year_data = subgroup[subgroup.year == second_year]
+                selection = pd.concat([first_year_data, second_year_data], axis=0)[:self.sequence_length]
+            else:
+                selection = subgroup[:self.sequence_length]
         elif self.return_mode == "random":
             n = subgroup.shape[0]
             if n > self.sequence_length:
@@ -318,7 +371,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         mask = np.zeros(self.sequence_length, dtype=bool)
         mask[n_obs:] = True
 
-        cls = selection.species.iloc[0]
+        cls = subgroup.species.iloc[0]
         if self.class_mapping is not None:
             cls = self.class_mapping[int(cls)]
 
@@ -329,8 +382,8 @@ class InMemoryTimeSeriesDataset(Dataset):
         return self.get_tree_data(tree_id)
 
     def __len__(self):
-        """Returns the number of samples per worker!!!"""
-        return len(self.tree_ids) // self.num_workers
+        """Returns the number of samples per worker if the worker init fn is used!!!"""
+        return len(self.tree_ids)
     
     @staticmethod
     def worker_init_fn(worker_id):
@@ -358,7 +411,8 @@ class InMemoryTimeSeriesDataset(Dataset):
 class PretrainingDatasetTIF(IterableDataset):
     def __init__(self, fileindex, seq_len, batchsize, time_encoding="absolute", pixels_per_image=961, qai_flag=223):
         self.tracts = self.read_index(fileindex)
-        np.random.shuffle(self.tracts)
+        rng = np.random.default_rng(seed=42)
+        rng.shuffle(self.tracts)
         self.seq_len = seq_len
         self.batchsize = batchsize
         self.time_encoding = time_encoding
@@ -429,7 +483,8 @@ class PretrainingDatasetNPZ(IterableDataset):
     def __init__(self, files, seq_len, batchsize, data_mask_percentage=0.1, time_encoding="absolute"):
         assert len(files) > 0, "Dataset input file list is empty."
         self.tracts = files
-        np.random.shuffle(self.tracts)
+        self.rng = np.random.default_rng(seed=42)
+        self.rng.shuffle(self.tracts)
         self.seq_len = seq_len
         self.batchsize = batchsize
         self.time_encoding = time_encoding
@@ -515,7 +570,7 @@ class PretrainingDatasetNPZ(IterableDataset):
             for x in gen:
                 yield x
 
-        np.random.shuffle(self.tracts)
+        self.rng.shuffle(self.tracts)
 
     def __iter__(self):
         return self.generator()
@@ -570,3 +625,6 @@ class MultiModalDataset(IterableDataset):
 
             except KeyError:
                 continue
+
+#%%
+

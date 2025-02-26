@@ -1,14 +1,19 @@
 import os
+import ast
+import yaml
 import torch
+import shutil
+import sqlite3
 import datetime
-import numpy as np
 import warnings
+import importlib
+import numpy as np
+from time import time
 from osgeo import gdal, osr
 import osgeo.gdalnumeric as gdn
 from itertools import islice
 from torch.utils.data import IterableDataset
-import sqlite3
-import numba
+# import numba
 gdal.UseExceptions()
 
 
@@ -325,8 +330,10 @@ def load_and_prepare_timeseries_folder(input_folder: str,
                                        time_encoding: str = "doy",
                                        t0: datetime.date = datetime.date(2015, 1, 1),
                                        fname2date = lambda s: datetime.datetime.strptime(s[:8], '%Y%m%d').date(),
-                                       tmin=datetime.date(0, 1, 1),
-                                       tmax=datetime.date(9999, 1, 1),
+                                       tmin_data=datetime.date(1, 1, 1),
+                                       tmax_data=datetime.date(9999, 1, 1),
+                                       tmin_inference=None,
+                                       tmax_inference=None
                                        ):
     """Loads all `seq_len` last BOA and QAI files from the given input folder. Depending on seq_len, \
     this needs lots of RAM.
@@ -334,33 +341,54 @@ def load_and_prepare_timeseries_folder(input_folder: str,
     Args:
         input_folder (str): The input folder path
         qai (int): A FORCE QAI binary flag
-        seq_len (int): Maximum sequence length to load. The found dates are filtered by tmin and tmax (default: no filtering) and then the last seq_len dates are loaded.
+        seq_len (int): Maximum sequence length to load. The found dates can be filtered by tmin and tmax
+            (default: no filtering) and then the last `seq_len` dates are loaded.
         time_encoding (str): Either doy for day of year time encoding or 'absolute' for the days passed since t0.
         t0 (datetime.date): Initial date from which to calculate the absolute time encoding
         fname2date (callable): Function converting a file name string to a datetime.date object.
-        tmin (datetime.date): Minimum date to include (default year 0). Times are filtered as tmin <= t < tmax.
-        tmax (datetime.date): Maximum date to include (default year 9999). Times are filtered as tmin <= t < tmax.
+        tmin_data (datetime.date): Minimum date to include (default year 0). Times are filtered as tmin <= t < tmax.
+        tmax_data (datetime.date): Maximum date to include (default year 9999). Times are filtered as tmin <= t < tmax.
+        tmin_inference (datetime.date): Minimum date to include for inference (default: tmin_data).
+        tmax_inference (datetime.date): Maximum date for inference (exclusive) (default: tmax_data).
 
     Returns:
-        In case that QAI == 0:
-            Input image shape (h,w), loaded BOAs as numpy array in format (h*w, seq_len, c), encoded times (seq_len), None, None
-        else: Input image shape (h,w), loaded BOAs in same format, encoded times (seq_len), pixel-wise boolean validity mask (h*w, seq_len), number of observations per pixel (h*w)
+        If qai == 0:
+            Input image shape (h,w,c),
+            loaded BOAs as numpy array in format (h*w, seq_len, c),
+            encoded times (seq_len),
+            times valid for inference as boolean array of shape (seq_len),
+            None,
+            Mone
+        else:
+            Input image shape (h,w,c),
+            loaded BOAs in same format,
+            encoded times (seq_len),
+            times valid for inference as boolean array of shape (seq_len),
+            pixel-wise boolean validity mask (h*w, seq_len),
+            number of observations per pixel (h*w)
     """
+    if tmin_inference is None:
+        tmin_inference = tmin_data
+    if tmax_inference is None:
+        tmax_inference = tmax_data
+
     assert time_encoding in ("doy", "absolute"), f"Please choose a valid time encoding: 'doy' for day of year or 'absolute' for days passed since t0"
     files = os.listdir(input_folder)
     assert len(files) > 0, f"No files found in input folder {input_folder}"
     boa_filenames = np.array(sorted(filter(lambda x: 'BOA' in x, files)))
     dates = np.array([fname2date(s) for s in boa_filenames])
-    valid_dates = [tmin <= d < tmax for d in dates][-seq_len:]
-    boa_filenames = boa_filenames[valid_dates]
-    dates = dates[valid_dates]
+    valid_dates = [tmin_data <= d < tmax_data for d in dates]
+    boa_filenames = boa_filenames[valid_dates][-seq_len:]
+    dates = dates[valid_dates][-seq_len:]
+    inference_date_mask = np.array([tmin_inference <= d < tmax_inference for d in dates])
 
     if qai > 0:
-        qais = np.array(sorted(filter(lambda x: 'QAI' in x, files)))[valid_dates]
+        qais = np.array(sorted(filter(lambda x: 'QAI' in x, files)))[valid_dates][-seq_len:]
 
     seq_len = len(boa_filenames)
     assert len(boa_filenames) == len(qais), f"Length of BOA and QAI time series differ ({len(boa_filenames)} vs {len(qais)})."
 
+    # TODO: use a function for below stuff
     if time_encoding == "doy":
         times = np.array([d.timetuple().tm_yday for d in dates])
     elif time_encoding == "absolute":
@@ -392,9 +420,9 @@ def load_and_prepare_timeseries_folder(input_folder: str,
         validity_mask = validity_mask.reshape((-1, seq_len))
         n_obs = np.sum(validity_mask, axis=1)
 
-        return (h,w,c), all_boas, times, validity_mask, n_obs
+        return (h,w,c), all_boas, times, inference_date_mask, validity_mask, n_obs
     else:
-        return (h,w,c), all_boas, times, None, None
+        return (h,w,c), all_boas, times, inference_date_mask, None, None
 
 
 def load_and_prepare_timeseries_files(boa_filenames: list[str],
@@ -465,11 +493,11 @@ def load_and_prepare_timeseries_files(boa_filenames: list[str],
 
 # @numba.jit(nopython=True, boundscheck=False, parallel=False)
 def assemble_batch_cpu(boa_batch, time_batch, mask_batch, start_idx, all_boas, n_obs, validity_mask, times):
-    size_of_this_batch, seq_len, c = boa_batch.shape  # size of last batch differs from the ones before
+    size_of_this_batch, seq_len, c = boa_batch.shape  # size of last batch might differ from the ones before
     assert start_idx + size_of_this_batch <= all_boas.shape[0]
-    boa_batch[:] = 0
-    mask_batch[:] = 1
-    time_batch[:] = 0
+    boa_batch.fill(0)
+    mask_batch.fill(1)
+    time_batch.fill(0)
     j = 0
     for i in range(start_idx, start_idx + size_of_this_batch):  # index in the source data
         # j = i % default_batch_size
@@ -485,3 +513,257 @@ def assemble_batch_cpu(boa_batch, time_batch, mask_batch, start_idx, all_boas, n
 
 def count_params(model):
     return sum(p.numel() for p in model.parameters())
+
+
+def instantiate_model_from_config(config_path, **override_kwargs):
+    def parse_value(value):
+        if isinstance(value, str):
+            try:
+                return ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                return value
+        return value
+
+    with open(config_path, 'r') as file:
+        config = yaml.safe_load(file)
+
+    class_path = config['model']['class_path']
+    init_args = {k: parse_value(v) for k, v in config['model']['init_args'].items()}
+    init_args.update({k: parse_value(v) for k, v in override_kwargs.items()})
+
+    class_path = "<class 'sen2classification.models.gru.GRU'>"
+    class_path = class_path[8:-2]
+    module_name = '.'.join(class_path.split('.')[:-1])
+    class_name = class_path.split('.')[-1]
+
+    module = importlib.import_module(module_name)
+    class_ = getattr(module, class_name)
+
+    return class_(**init_args), init_args
+
+
+def load_model_from_configs_and_checkpoint(model_config, data_config, checkpoint_path):
+    with open(data_config) as f:
+        dataconfig = yaml.safe_load(f)
+
+    classes = list(sorted(set(dataconfig["data"]["class_mapping"].values())))
+    num_classes = len(classes)
+    model, init_args = instantiate_model_from_config(config_path=model_config,
+                                                     num_classes=num_classes,
+                                                     classes=classes)
+
+    state_dict = torch.load(checkpoint_path, map_location=model.device)["state_dict"]
+    model.load_state_dict(state_dict)
+    return model, init_args
+
+# def load_model_from_config_and_checkpoint(config, checkpoint_path):
+
+
+
+def classname(obj):
+    return obj.__class__.__name__
+
+
+def copy_file_to_destination(destination_folder, file):
+    current_file_path = os.path.abspath(file)
+    if not os.path.exists(destination_folder):
+        os.makedirs(destination_folder)
+    shutil.copy(current_file_path, os.path.join(destination_folder, os.path.basename(current_file_path)))
+
+
+# def numpy_representer(dumper, data):
+#     """Convert numpy arrays to lists for YAML serialization."""
+#     return dumper.represent_list(data.tolist())
+
+
+def listify(d):
+    """Recursively converts all numpy arrays in a dictionary to lists."""
+    if isinstance(d, dict):
+        return {key: listify(value) for key, value in d.items()}
+    elif isinstance(d, np.ndarray):
+        return d.tolist()
+    else:
+        return d
+
+
+def save_dict_to_yaml(data, filename):
+    """
+    Save a dictionary containing numpy arrays to a YAML file.
+
+    Args:
+        data (dict): The dictionary to save.
+        filename (str): The filename where the dictionary should be saved.
+    """
+    # Register the numpy array representer to handle np.ndarray objects
+    # yaml.add_representer(np.ndarray, numpy_representer)
+
+    with open(filename, 'w') as file:
+        yaml.dump(listify(data), file, default_flow_style=False)
+
+
+def predict_on_batches(model, all_boas, times, validity_mask, n_obs, mean, stddev, batch_size,
+                       inference_date_mask, verbose, apply_argmax=True, num_classes=0):
+        num_output_pixels = all_boas.shape[0]
+        seq_len = all_boas.shape[1]
+        c = all_boas.shape[2]  # channels
+        seq_len = 2 ** int(np.ceil(np.log(seq_len) / np.log(2)))  # pad to next power of 2
+        inference_date_mask = np.pad(inference_date_mask, (0, seq_len - len(inference_date_mask)), constant_values=0)
+
+        # get rid of pixels with 0 observations
+        valid_pixel_mask = n_obs > 0
+        all_boas = all_boas[valid_pixel_mask]
+        validity_mask = validity_mask[valid_pixel_mask]
+        n_obs = n_obs[valid_pixel_mask]
+        num_pixels = valid_pixel_mask.sum()
+
+        # pre-allocate memory for different network inputs
+        boa_batch = np.zeros((batch_size, seq_len, c), dtype=np.float32)
+        time_batch = np.zeros((batch_size, seq_len), dtype=np.int32)
+        data_mask_batch = np.zeros((batch_size, seq_len), dtype=bool)
+
+        # pre-allocate data on GPU to recycle memory, boosts perf by ca 4%
+        boa_torch = torch.zeros((batch_size, seq_len, c), device=model.device, dtype=torch.float32)
+        time_torch = torch.zeros((batch_size, seq_len), device=model.device, dtype=torch.int32)
+        data_mask_torch = torch.zeros((batch_size, seq_len), device=model.device, dtype=bool)
+
+        # The inference mask can be used for transformer models to average only over tokens where
+        # the inference mask is true. The mask is constant for all batches.
+        inference_mask_torch = torch.from_numpy(inference_date_mask).to(model.device)
+        inference_mask_torch_batch = inference_mask_torch.expand(batch_size, seq_len)
+
+        mean = torch.from_numpy(mean).to(model.device)
+        stddev = torch.from_numpy(stddev).to(model.device)
+
+        # instantiate output for prediction as well as for the final output that will have all zeros or 255s, where
+        # no prediction was made due to missing observations
+        if apply_argmax:
+            output = torch.zeros(num_pixels, dtype=torch.uint8, device=model.device)
+            # set output to 255 so that we can filter out invalid pixels,
+            # as it's highly unlikely that the model ever outputs 256 classes
+            final_output = torch.ones(num_output_pixels, dtype=torch.uint8, device=model.device) * 255
+        else:
+            output = torch.zeros((num_pixels, num_classes), dtype=torch.uint8, device=model.device)
+            # here we keep the zeros; invalid pixels will have 0 in every band
+            final_output = torch.zeros((num_output_pixels, num_classes), dtype=torch.uint8, device=model.device)
+
+        # predict
+        t0 = time()
+        with ((torch.no_grad())):
+            i = 0  # batch counter
+            start = 0
+            while start < num_pixels:
+                if i % 100 == 0 and verbose:
+                    print(f"{i} / {num_pixels // batch_size}")
+                stop = min(start + batch_size, num_pixels)
+                bs = stop - start
+                # adjust the size of the last batch
+                # lot of repetition, but needed to avoid allocations
+                if start + batch_size > num_pixels:
+                    boa_batch = np.zeros((bs, seq_len, c), dtype=np.float32)
+                    time_batch = np.zeros((bs, seq_len), dtype=np.int32)
+                    data_mask_batch = np.zeros((bs, seq_len), dtype=bool)
+                    boa_torch = torch.zeros((bs, seq_len, c), device=model.device, dtype=torch.float32)
+                    time_torch = torch.zeros((bs, seq_len), device=model.device, dtype=torch.int32)
+                    data_mask_torch = torch.zeros((bs, seq_len), device=model.device, dtype=bool)
+                    inference_mask_torch_batch = inference_mask_torch.expand(bs, seq_len)
+
+                assemble_batch_cpu(boa_batch, time_batch, data_mask_batch, start, all_boas, n_obs, validity_mask, times)
+
+                # copy data over to GPU without allocations (hopefully)
+                boa_torch[:] = torch.from_numpy(boa_batch)
+                time_torch[:] = torch.from_numpy(time_batch)
+                data_mask_torch[:] = torch.from_numpy(data_mask_batch)
+                boa_torch[~data_mask_torch] -= mean
+                boa_torch[~data_mask_torch] /= stddev + 1e-7
+                pred = model(boa_torch, time_torch, data_mask_torch, inference_mask_torch_batch)
+                if apply_argmax:
+                    pred = pred.argmax(dim=-1)
+                    output[start:stop] = pred.to(torch.uint8)
+                else:
+                    pred = pred.softmax(dim=-1) * 255
+                    output[start:stop, :] = pred.to(torch.uint8)
+                start += batch_size
+                i += 1
+
+        # output = output.reshape(h, w).cpu().numpy()
+        if verbose:
+            print("Prediction time: ", time() - t0)
+
+        final_output[valid_pixel_mask] = output
+
+        return final_output
+
+
+def k_fold_generator(n: int, k: int, test_fraction: float = 0.3, seed: int = 1):
+    """ Infinitely running K-Fold generator for list indices.
+
+    Args:
+        n: Number of items in collection to be iterated over (length of list)
+        k: Number of folds - n // k is the step size between two folds
+        test_fraction: Test fraction
+        seed: Seed for the internal RNG
+
+    Returns:
+        A generator object which infinitely yields a new set of (training_indices, test_indices) on each call of next().
+    """
+    i = 0
+    indices = list(np.arange(n))
+    rstate = np.random.RandomState(seed=seed)
+    rstate.shuffle(indices)
+    m = int(n * test_fraction)
+    step = n // k
+
+    print("Training samples: %d" % (n - m))
+    print("Test samples: %d" % m)
+
+    while True:
+        test_start = i % n
+        test_end = (i + m) % n
+
+        if test_start < test_end:
+            test_set = indices[test_start:test_end]
+            training_set = indices[:test_start] + indices[test_end:]
+        else:
+            test_set = indices[:test_end] + indices[test_start:]
+            training_set = indices[test_end:test_start]
+
+        yield training_set, test_set
+        i += step
+
+
+def k_fold_generator_list(items: list, k: int, test_fraction: float = 0.3, seed: int = 1):
+    """ Infinitely running K-Fold generator for list indices.
+
+    Args:
+        items: List of items to be iterated over (length of list)
+        k: Number of folds - n // k is the step size between two folds
+        test_fraction: Test fraction
+        seed: Seed for the internal RNG
+
+    Returns:
+        A generator object which infinitely yields a new set of (training_indices, test_indices) on each call of next().
+    """
+    i = 0
+    items = list(items)
+    n = len(items)
+    rstate = np.random.RandomState(seed=seed)
+    rstate.shuffle(items)
+    m = int(n * test_fraction)
+    step = n // k
+
+    print("Training samples: %d" % (n - m))
+    print("Test samples: %d" % m)
+
+    while True:
+        test_start = i % n
+        test_end = (i + m) % n
+
+        if test_start < test_end:
+            test_set = items[test_start:test_end]
+            training_set = items[:test_start] + items[test_end:]
+        else:
+            test_set = items[:test_end] + items[test_start:]
+            training_set = items[test_end:test_start]
+
+        yield training_set, test_set
+        i += step

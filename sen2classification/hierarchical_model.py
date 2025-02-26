@@ -1,14 +1,17 @@
 import os
+import torch
 import datetime
 import numpy as np
-import torch
-from torch.utils.data import DataLoader
-from .utils import GeneratorDataset, read_img, array_to_tif
+from glob import glob
+from uuid import uuid4
+from torch.nn.functional import one_hot
+from .utils import array_to_tif, assemble_batch_cpu, load_and_prepare_timeseries_folder, predict_on_batches
 from pytorch_lightning import LightningModule
+from sen2classification.satellite_classifier import SatelliteClassifier
 
 
-class HierarchicalModel(LightningModule):
-    def __init__(self, parent_model, child_models, num_classes: list):
+class HierarchicalModel(SatelliteClassifier):
+    def __init__(self, parent_model, child_models, num_classes: list, classes: list, reorder_dict: dict = None):
         """
         Takes a list of models. Input is passed through the parent model first to determine which child model to use.
         The parent model's output is argmax'ed and based on that the respective child model is called with the input.
@@ -21,46 +24,56 @@ class HierarchicalModel(LightningModule):
         This model is not differentiable and therefore not trainable!
 
         Args:
-            parent_model: The parent model used to decide which child model to use
+            parent_model: The parent model used to decide which child model to use. The background class should be 0 after argmaxing the output.
             child_models: The child models that output the final classification. The child model order has to match the
                 order of classes of the parent model. E.g. argmaxed parent output 1 will call the child model with index 1.
-            num_classes (list): Number of output classes per child model, in the same order. Background class counts as one.
+            num_classes (list): Number of output classes per child model, in the same order.
+            reorder_dict (dict): A dict that maps hierarchical model output class indices to new values. If given,
+                these substitutions are always applied to all model outputs.
+            classes (list): A list of strings containing the output class names.
         """
-        super().__init__()
+        super().__init__(num_classes=sum(num_classes)+1, classes=classes, lr=0)
         self.parent_model = parent_model
         self.child_models = child_models
-        self.class_offset = torch.tensor(np.cumsum(num_classes), requires_grad=False)
+        self.class_offset = torch.tensor(np.cumsum([1] + num_classes), requires_grad=False, device=parent_model.device)
+        self.lookup_table = torch.arange(256, device=parent_model.device)
+        if reorder_dict is not None:
+            for key, value in reorder_dict.items():
+                assert key < 256, "The class reordering is invalid and maps to a value greater than 255."
+                self.lookup_table[key] = value
 
         print(f"class offset {self.class_offset}")
 
-    def forward(self, x):
+    def forward(self, boa, times, mask):
         # x is a tuple of (boa, doy, mask) values
         # each of them containing items of a batch
         with torch.no_grad():
             # make prediction with parent model and argmax the values to obtain the class indices
-            parent_classes = torch.argmax(self.parent_model(x), dim=1)
+            # background must have value 0! then followed by the other classes
+            parent_classes = torch.argmax(self.parent_model(boa, times, mask), dim=1)
             output = torch.zeros_like(parent_classes)
 
-            # select all items from batch equal to cls where cls ranges from 0 to the length of child models
-            # including the None which indicates the background class position in the parent model
-            for cls in range(len(self.child_models)):
-                mask = parent_classes == cls
-                model = self.child_models[cls]
+            for cls, model in enumerate(self.child_models, start=1):
+                # select all items from batch equal to cls
+                class_mask = parent_classes == cls
 
                 # do nothing if there are no values to make predictions for
-                if mask.sum() == 0:
+                if class_mask.sum() == 0:
                     continue
 
                 # set background values to 0
-                if model is None:
-                    output[mask] = 0
-                    continue
+                # if model is None:
+                #     output[class_mask] = 0
+                #     continue
 
                 # make prediction for the other classes
-                y = torch.argmax(model((x[0][mask], x[1][mask], x[2][mask])), dim=1)
-                output[mask] = y + self.class_offset[cls-1]
+                pred = model(boa[class_mask], times[class_mask], mask[class_mask])
+                y = torch.argmax(pred, dim=1)
+                output[class_mask] = y + self.class_offset[cls-1]  # add one, because 0 is already background
 
-            return output
+            output[:] = self.lookup_table[output]
+
+            return one_hot(output, num_classes=self.num_classes)
 
     @classmethod
     def from_jitted_weights(cls, parent_model_path, child_model_paths, num_classes):
@@ -77,187 +90,119 @@ class HierarchicalModel(LightningModule):
         child_models = [child_class.load_from_checkpoint(p, map_location=device, **kwargs) if p is not None else None for p in child_model_paths]
         return cls(parent_model, child_models, num_classes)
 
-    # ok duplicate code bomb is coming
-    def predict_timeseries_slow(self, input_folder, qai, seq_len, output_filepath=None, save=True,
-                           t0=datetime.date(2015, 1, 1), batch_size=16, num_workers=0):
-        self.parent_model.eval()
-        for m in self.child_models:
-            if m is not None:
-                m.eval()
+    def predict_force_folder(self,
+                             input_folder,
+                             qai,
+                             seq_len,
+                             output_filepath=None,
+                             save=True,
+                             batch_size=128,
+                             mean=np.zeros(10, dtype=np.float32),
+                             stddev=np.ones(10, dtype=np.float32) * 10000,
+                             fname2date=lambda s: datetime.datetime.strptime(s[:8], '%Y%m%d').date(),
+                             time_encoding="absolute",
+                             t0=datetime.date(2015, 1, 1),
+                             tmin_data=datetime.date(2015, 1, 1),
+                             tmax_data=datetime.date(2024, 1, 1),
+                             tmin_inference=None,
+                             tmax_inference=None,
+                             verbose=False,
+                             ):
+        """
+        Predicts on all images in a folder, saves the result as a tif file and returns the prediction as a numpy array.
 
-        files = os.listdir(input_folder)
-        boa_filenames = list(sorted(filter(lambda x: 'SEN2' in x and 'BOA' in x, files)))[-seq_len:]
+        Args:
+            input_folder: Input folder with images
+            qai: Quality Assurance Information bit flags
+            seq_len: Sequence length
+            output_filepath: Output file path
+            save: Whether to save the prediction as a tif file
+            batch_size: Batch size
+            mean: Mean of the training data
+            stddev: Standard deviation of the training data
+            fname2date: Function to convert filenames to dates
+            time_encoding: Whether the time encoding the network expects is absolute (calculated from t0) or relative (day of year)
+            t0: Time origin
+            tmin_data: Starting point in time for loading the data
+            tmax_data: End point in time for loading the data
+            tmin_inference: Starting point in time for inference. If None, tmin_data is used.
+            tmax_inference: End point in time for inference (exclusive). If None, tmax_data is used.
+            verbose: Whether to print progress information
 
-        dates = [datetime.datetime.strptime(s[:8], '%Y%m%d').date() for s in boa_filenames]
-        days_since_t0 = np.array([(date - t0).days for date in dates])
+        Returns:
+            Prediction as numpy array
+        """
+        if verbose:
+            print(f"Predicting on images in folder {input_folder}")
+        self.eval()
 
-        print("Loading images")
-        sample_boa = read_img(os.path.join(input_folder, boa_filenames[0]), dim_ordering="HWC", dtype=np.int16)
-        h, w, c = sample_boa.shape
-        all_boas = np.empty((h, w, seq_len, c), dtype=np.int16)
+        if tmin_inference is None:
+            tmin_inference = tmin_data
+        if tmax_inference is None:
+            tmax_inference = tmax_data
 
-        # read all the files
-        for (i, f) in enumerate(boa_filenames):
-            fname = os.path.join(input_folder, f)
-            img = read_img(fname, dim_ordering="HWC", dtype=np.int32)
-            all_boas[:, :, i, :] = img
+        if tmin_inference < tmin_data \
+                or tmax_inference < tmin_data \
+                or tmin_inference > tmax_data \
+                or tmax_inference > tmax_data \
+                or tmin_inference > tmax_inference \
+                or tmin_data > tmax_data:
+            raise ValueError("Invalid time range for inference or data loading.")
 
-        all_boas = all_boas.reshape((-1, seq_len, c))
+        boa_filenames = glob(os.path.join(input_folder, "*.tif"))
 
-        if qai > 0:
-            qais = list(sorted(filter(lambda x: 'SEN2' in x and 'QAI' in x, files)))[-seq_len:]
-            validity_mask = np.empty((h, w, seq_len, 1), dtype=bool)
-            for (i, f) in enumerate(qais):
-                fname = os.path.join(input_folder, f)
-                img = read_img(fname, dim_ordering="HWC", dtype=np.uint32)
-                validity_mask[:, :, i, :] = (img & qai) == 0
+        # all_boas has shape (h*w, loaded images (sequence length), c)
+        (h, w, c), all_boas, times, inference_date_mask, validity_mask, n_obs = load_and_prepare_timeseries_folder(
+                input_folder,
+                qai,
+                seq_len,
+                time_encoding,
+                t0,
+                fname2date=fname2date,
+                tmin_data=tmin_data,
+                tmax_data=tmax_data,
+                tmin_inference=tmin_inference,
+                tmax_inference=tmax_inference,
+                )
 
-            validity_mask = validity_mask.reshape((-1, seq_len))
-            n_obs = np.sum(validity_mask, axis=1)
+        output = torch.zeros(h * w, dtype=torch.uint8, device=self.parent_model.device)
 
-            def pixel_generator():
-                i = 0
-                while i < all_boas.shape[0]:
-                    n = n_obs[i]
-                    mask = validity_mask[i]
-                    transformer_mask = np.zeros(seq_len, dtype=int)
-                    transformer_mask[:n] = 1
-                    this_pixels_times = np.zeros(seq_len, dtype=int)
-                    this_pixels_times[:n] = days_since_t0[mask]
-                    boa = np.zeros((seq_len, c), dtype=np.float32)
-                    boa[:n, :] = all_boas[i][mask]
-                    yield torch.from_numpy(boa), torch.from_numpy(this_pixels_times), torch.from_numpy(transformer_mask)
-                    i += 1
-        else:
-            def pixel_generator():
-                i = 0
-                while i < all_boas.shape[0]:
-                    transformer_mask = np.ones(seq_len, dtype=int)
-                    yield torch.from_numpy(all_boas[i]), torch.from_numpy(days_since_t0), torch.from_numpy(
-                        transformer_mask)
-                    i += 1
+        parent_output = predict_on_batches(self.parent_model, all_boas, times, validity_mask, n_obs, mean, stddev,
+                                           batch_size, inference_date_mask, verbose)
 
-        gen = GeneratorDataset(pixel_generator())
-        dl = DataLoader(gen, batch_size=batch_size, num_workers=num_workers)
-        output = np.zeros(w * h, dtype=np.uint8)
+        output[:] = parent_output
 
-        print("Starting prediction")
-        print(f"0 / {w * h // batch_size}")
-        with torch.no_grad():
-            for (i, batch) in enumerate(dl):
-                if i % 100 == 0:
-                    print(f"{i} / {w * h // batch_size}")
-                boa, doy, mask = batch
-                boa = boa.to(self.device)
-                doy = doy.to(self.device)
-                mask = mask.to(self.device)
-                pred = self((boa, doy, mask))
-                start = i * batch_size
-                stop = start + pred.shape[0]
-                output[start:stop] = pred.cpu().numpy()
+        # make prediction for the other classes
+        for (cls, model) in enumerate(self.child_models, start=1):
+            class_mask = parent_output == cls
+            class_mask_cpu = class_mask.cpu().numpy()
 
-        output = output.reshape((h, w))
+            # do nothing if there are no values to make predictions for
+            if class_mask.sum() == 0:
+                continue
+
+            child_output = predict_on_batches(model, all_boas[class_mask_cpu], times, validity_mask[class_mask_cpu],
+                                              n_obs[class_mask_cpu], mean, stddev, batch_size,
+                                              inference_date_mask, verbose)
+
+            output[class_mask] = child_output + self.class_offset[cls-1]  # add one, because 0 is already background
+
+        output[:] = self.lookup_table[output.to(torch.int32)]
+
+        output = output.reshape(h, w).cpu().numpy()
 
         if save:
             if output_filepath is None:
                 if os.path.isdir(input_folder) and input_folder[-1] != os.sep:
                     input_folder += os.sep
 
-                output_filename = input_folder.split(os.sep)[-2]
+                output_filename = input_folder.split(os.sep)[-2] + "_pred_" + str(uuid4())[:4]
                 assert output_filename != "", "Calculated empty output file name, check input directory."
                 output_filepath = os.path.join(os.path.abspath(input_folder), f"{output_filename}.tif")
 
             sample_filepath = os.path.join(input_folder, boa_filenames[0])
-            print(f"Writing file {output_filepath}")
+            if verbose:
+                print(f"Writing file {output_filepath}")
             array_to_tif(output, output_filepath, src_raster=sample_filepath)
+
         return output
-
-    def predict_timeseries(self, input_folder, qai, seq_len, output_filepath=None, save=True, t0=datetime.date(2015, 1, 1), batch_size=16, num_workers=0):
-        self.parent_model.eval()
-        for m in self.child_models:
-            if m is not None:
-                m.eval()
-
-        files = os.listdir(input_folder)
-        boa_filenames = list(sorted(filter(lambda x: 'SEN2' in x and 'BOA' in x, files)))[-seq_len:]
-
-        dates = [datetime.datetime.strptime(s[:8], '%Y%m%d').date() for s in boa_filenames]
-        days_since_t0 = np.array([(date - t0).days for date in dates])
-
-        print("Loading images")
-        sample_boa = read_img(os.path.join(input_folder, boa_filenames[0]), dim_ordering="HWC", dtype=np.int16)
-        h, w, c = sample_boa.shape
-        all_boas = np.empty((h, w, seq_len, c), dtype=np.int16)
-
-        # eat ALL the RAM :)))
-        for (i, f) in enumerate(boa_filenames):
-            fname = os.path.join(input_folder, f)
-            img = read_img(fname, dim_ordering="HWC", dtype=np.int32)
-            all_boas[:, :, i, :] = img
-
-        all_boas = all_boas.reshape((-1, seq_len, c))
-
-        if qai > 0:
-            qais = list(sorted(filter(lambda x: 'SEN2' in x and 'QAI' in x, files)))[-seq_len:]
-            validity_mask_raw = np.empty((h, w, seq_len, 1), dtype=bool)
-            for (i,f) in enumerate(qais):
-                fname = os.path.join(input_folder, f)
-                img = read_img(fname, dim_ordering="HWC", dtype=np.uint32)
-                validity_mask_raw[:,:,i,:] = (img & qai) == 0
-
-            validity_mask = validity_mask_raw.reshape((-1, seq_len))
-            n_obs = np.sum(validity_mask, axis=1)
-
-            def pixel_generator(validity_mask):
-                i = 0
-                while i < all_boas.shape[0]:
-                    n = n_obs[i]
-                    mask = validity_mask[i]
-                    transformer_mask = np.zeros(seq_len, dtype=int)
-                    transformer_mask[:n] = 1
-                    this_pixels_times = np.zeros(seq_len, dtype=int)
-                    this_pixels_times[:n] = days_since_t0[mask]
-                    boa = np.zeros((seq_len, c), dtype=np.float32)
-                    boa[:n, :] = all_boas[i][mask]
-                    yield torch.from_numpy(boa), torch.from_numpy(this_pixels_times), torch.from_numpy(transformer_mask)
-                    i += 1
-
-            gen = GeneratorDataset(pixel_generator(validity_mask))
-
-        else:
-            def pixel_generator():
-                i = 0
-                while i < all_boas.shape[0]:
-                    transformer_mask = np.ones(seq_len, dtype=int)
-                    yield torch.from_numpy(all_boas[i]), torch.from_numpy(days_since_t0), torch.from_numpy(transformer_mask)
-                    i += 1
-
-            gen = GeneratorDataset(pixel_generator())
-
-        dl = DataLoader(gen, batch_size=batch_size, num_workers=num_workers, pin_memory=True)
-        parent_prediction = np.zeros(w*h, dtype=np.uint8)
-        final_prediction = np.zeros(w*h, dtype=np.uint8)
-
-        print("Starting prediction")
-        print(f"0 / {w*h//batch_size}")
-        with torch.no_grad():
-            for (i,batch) in enumerate(dl):
-                print(f"{i} / {w * h // batch_size}")
-                boa, doy, mask = batch
-                boa = boa.to(self.device)
-                doy = doy.to(self.device)
-                mask = mask.to(self.device)
-                pred = torch.argmax(self.parent_model((boa, doy, mask)), dim=1)
-                start = i*batch_size
-                stop = start + pred.shape[0]
-                parent_prediction[start:stop] = pred.cpu().numpy()
-
-        parent_prediction = parent_prediction.reshape((h, w))
-
-        for i, m in enumerate(self.child_models):
-            if m is None:
-                continue
-
-            mask = parent_prediction == i
-            this_class_validity_mask
-

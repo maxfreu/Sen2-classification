@@ -143,7 +143,7 @@ if __name__ == "__main__":
     train_loader, valid_loader = dataset.get_data_loaders()
 
     print("Initialing SITS-BERT...")
-    sbert = SBERT(config.num_features, d_model=config.hidden_size, n_layers=config.layers,
+    sbert = SBERT(config.num_features, d_model=config.hidden_size, num_layers=config.layers,
                   attn_heads=config.attn_heads, dropout=config.dropout)
 
     trainer = SBERTTrainer(sbert, config.num_features,

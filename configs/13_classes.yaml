@@ -1,0 +1,119 @@
+data:
+  batch_size: 128
+  num_workers: 8
+  input_file: "/tmp/S2GNFI_V1.parquet"
+  dbname: "data"
+  sequence_length: 128
+  satellite_input_channels: 10
+  return_mode: "random"
+  time_encoding: "absolute"
+  where: ""
+  quality_mask: 31
+  class_mapping:
+    -1: "BG"
+
+    10: "SP"
+    11: "SP"
+    12: "SP"
+    13: "SP"
+    14: "SP"
+    15: "SP"
+    16: "SP"
+    19: "SP"
+
+    20: "PI"
+    21: "PI"
+    22: "PI"
+    23: "PI"
+    24: "PI"
+    25: "PI"
+    26: "PI"
+    27: "PI"
+    29: "PI"
+
+    30: "FIR"
+    31: "FIR"
+    32: "FIR"
+    33: "FIR"
+    34: "FIR"
+    35: "FIR"
+    36: "FIR"
+    39: "FIR"
+
+    40: "DG"
+
+    50: "LA"
+    51: "LA"
+
+    90: "OC"
+    91: "OC"
+    92: "OC"
+    93: "OC"
+    94: "OC"
+    95: "OC"
+    99: "OC"
+
+    100: "BE"
+
+    110: "OA"
+    111: "OA"
+    112: "OA"
+    113: "OA"
+    114: "OA"
+
+    120: "OD"
+    121: "OD"
+
+    130: "OD"
+
+    140: "MA"
+    141: "MA"
+    142: "MA"
+    143: "MA"
+    144: "MA"
+
+    150: "OD"
+
+    160: "OD"
+
+    170: "OD"
+    180: "OD"
+    181: "OD"
+    190: "OD"
+    191: "OD"
+    192: "OD"
+    193: "OD"
+    194: "OD"
+    195: "OD"
+    196: "OD"
+    199: "OD"
+
+    200: "BI"
+    201: "BI"
+
+    210: "AL"
+    211: "AL"
+    212: "AL"
+    213: "AL"
+
+    220: "OD"
+    221: "OD"
+    222: "OD"
+    223: "OD"
+    224: "OD"
+
+    230: "OD"
+
+    240: "OD"
+
+    250: "OD"
+    251: "OD"
+    252: "OD"
+    290: "OD"
+    291: "OD"
+    292: "OD"
+    293: "OD"
+    294: "OD"
+    295: "OD"
+    296: "OD"
+    299: "OD"

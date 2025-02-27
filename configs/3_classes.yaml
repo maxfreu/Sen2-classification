@@ -1,0 +1,119 @@
+data:
+  batch_size: 128
+  num_workers: 8
+  input_file: "/tmp/S2GNFI_V1.parquet"
+  dbname: "data"
+  sequence_length: 128
+  satellite_input_channels: 10
+  return_mode: "random"
+  time_encoding: "absolute"
+  where: ""
+  quality_mask: 31
+  class_mapping:
+    -1: "BG"
+
+    10: "CO"
+    11: "CO"
+    12: "CO"
+    13: "CO"
+    14: "CO"
+    15: "CO"
+    16: "CO"
+    19: "CO"
+
+    20: "CO"
+    21: "CO"
+    22: "CO"
+    23: "CO"
+    24: "CO"
+    25: "CO"
+    26: "CO"
+    27: "CO"
+    29: "CO"
+
+    30: "CO"
+    31: "CO"
+    32: "CO"
+    33: "CO"
+    34: "CO"
+    35: "CO"
+    36: "CO"
+    39: "CO"
+
+    40: "CO"
+
+    50: "CO"
+    51: "CO"
+
+    90: "CO"
+    91: "CO"
+    92: "CO"
+    93: "CO"
+    94: "CO"
+    95: "CO"
+    99: "CO"
+
+    100: "DC"
+
+    110: "DC"
+    111: "DC"
+    112: "DC"
+    113: "DC"
+    114: "DC"
+
+    120: "DC"
+    121: "DC"
+
+    130: "DC"
+
+    140: "DC"
+    141: "DC"
+    142: "DC"
+    143: "DC"
+    144: "DC"
+
+    150: "DC"
+
+    160: "DC"
+
+    170: "DC"
+    180: "DC"
+    181: "DC"
+    190: "DC"
+    191: "DC"
+    192: "DC"
+    193: "DC"
+    194: "DC"
+    195: "DC"
+    196: "DC"
+    199: "DC"
+
+    200: "DC"
+    201: "DC"
+
+    210: "DC"
+    211: "DC"
+    212: "DC"
+    213: "DC"
+
+    220: "DC"
+    221: "DC"
+    222: "DC"
+    223: "DC"
+    224: "DC"
+
+    230: "DC"
+
+    240: "DC"
+
+    250: "DC"
+    251: "DC"
+    252: "DC"
+    290: "DC"
+    291: "DC"
+    292: "DC"
+    293: "DC"
+    294: "DC"
+    295: "DC"
+    296: "DC"
+    299: "DC"

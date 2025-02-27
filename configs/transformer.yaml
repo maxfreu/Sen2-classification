@@ -1,0 +1,41 @@
+trainer:
+  fast_dev_run: false
+  max_steps: 55900
+  log_every_n_steps: 400
+  enable_progress_bar: false
+  precision: 16-mixed
+  logger:
+    class_path: pytorch_lightning.loggers.TensorBoardLogger
+    init_args:
+      save_dir: ./output
+      name: transformer
+  callbacks:
+    - class_path: pytorch_lightning.callbacks.ModelCheckpoint
+      init_args:
+        save_last: true
+        save_top_k: 2
+        monitor: val_loss
+        mode: min
+        every_n_epochs: 1
+    - class_path: pytorch_lightning.callbacks.LearningRateMonitor
+    - class_path: pytorch_lightning.callbacks.EarlyStopping
+      init_args:
+        monitor: val_loss
+        patience: 15
+
+model:
+  class_path: sen2classification.models.transformer.SBERTClassifier
+  init_args:
+    hidden_dim: 512
+    num_layers: 4
+    num_attention_heads: 16
+
+    # shared args
+    lr: 5e-4
+    dropout: 0.3
+    use_weighted_loss: false
+    cosine_init_period: 0
+    layernorm_on_input: false
+    embedding_type: concat
+    max_time: 2929
+    warmup_steps: 10000

@@ -22,14 +22,6 @@ from sen2classification.focalloss import FocalLoss
 from filelock import FileLock
 
 
-# TODO: remove necessity for this or integrate it better!
-def reorder_array(arr, new_order):
-    out = np.empty_like(arr)
-    for (old_index, new_index) in zip(range(arr.shape[-1]), new_order):
-        out[:,:,new_index] = arr[:,:,old_index]
-    return out
-
-
 class SatelliteClassifier(LightningModule):
     def __init__(self,
                  num_classes: int,
@@ -216,7 +208,7 @@ class SatelliteClassifier(LightningModule):
             time_encoding: Whether the time encoding the network expects is absolute (calculated from t0) or relative (day of year)
             apply_argmax (bool): Whether to apply argmax to the output, i.e. whether to convert soft classifications into hard decisions for one class
             num_classes (int): Only applicable if apply_argmax=False. Number of classes the network outputs.
-            band_reordering (list): An optional list for reordering the output bands. The list should contain the indices of the old array in the new one, e.g. [2,0,1] to move the last band to first position.
+            band_reordering (list): An optional list for reordering the output bands. The list should contain all indices of the old array in the new one, e.g. [2,0,1] to move the last band to first position.
             t0: Time origin
             tmin_data: Starting point in time for loading the data
             tmax_data: End point in time for loading the data
@@ -276,7 +268,7 @@ class SatelliteClassifier(LightningModule):
             # TODO: move this logic into predict_on_batches!
             if band_reordering:
                 print("reordering bands")
-                output = reorder_array(output, band_reordering)
+                output = output[:, :, list(band_reordering)]
 
         if save:
             if output_filepath is None:

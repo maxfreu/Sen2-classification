@@ -90,7 +90,7 @@ def main():
                                apply_argmax=not args.soft,
                                num_classes=args.num_classes,
                                # TODO: Remove this hardcoding!!!
-                               band_reordering=(3,0,1,2,4,5,6,7,8,8,10,11,12,13),
+                               band_reordering=(3,0,1,2,4,5,6,7,8,9,10,11,12,13),
                                tmin_data=tmin_data,
                                tmax_data=tmax_data,
                                tmin_inference=tmin_inference,

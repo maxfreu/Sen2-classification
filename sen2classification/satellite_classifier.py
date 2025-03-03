@@ -275,6 +275,7 @@ class SatelliteClassifier(LightningModule):
 
             # TODO: move this logic into predict_on_batches!
             if band_reordering:
+                print("reordering bands")
                 output = reorder_array(output, band_reordering)
 
         if save:

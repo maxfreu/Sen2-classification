@@ -93,6 +93,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                  seed: int = 42,
                  where: str = "",
                  val_where: str = "none",
+                 append_ndvi: bool = False,
                  pickle_path: str = "/tmp",
                  mean=np.zeros(10),
                  stddev=np.ones(10) * 10000,
@@ -115,6 +116,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.seed = seed
         self.where = where
         self.val_where = val_where if val_where != "none" else where
+        self.append_ndvi = append_ndvi
         self.pickle_path = pickle_path
         self.mean = np.array(mean)
         self.stddev = np.array(stddev)
@@ -134,7 +136,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
             return
 
         if self.train_ids is None:
-            # the brackets around where are fuckin important
+            # the brackets around 'where' are fuckin important
             # because of operator precedence!!!
             train_where = f"({self.where}) AND is_train = TRUE" if self.where else "is_train = TRUE"
         else:
@@ -157,6 +159,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                        return_mode=self.return_mode,
                                                        time_encoding=self.time_encoding,
                                                        where=train_where,
+                                                       append_ndvi=self.append_ndvi,
                                                        plot_ids=self.train_ids,
                                                        mean=self.mean,
                                                        stddev=self.stddev
@@ -174,6 +177,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                   return_mode=self.return_mode,
                                                   time_encoding=self.time_encoding,
                                                   where=val_where,
+                                                  append_ndvi=self.append_ndvi,
                                                   plot_ids=self.val_ids,
                                                   mean=self.mean,
                                                   stddev=self.stddev

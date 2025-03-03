@@ -190,6 +190,7 @@ class SatelliteClassifier(LightningModule):
                              tmax_data=datetime.date(2024, 1, 1),
                              tmin_inference=None,
                              tmax_inference=None,
+                             append_ndvi=False,
                              verbose=False,
                              ):
         """
@@ -214,6 +215,7 @@ class SatelliteClassifier(LightningModule):
             tmax_data: End point in time for loading the data
             tmin_inference: Starting point in time for inference. If None, tmin_data is used.
             tmax_inference: End point in time for inference (exclusive). If None, tmax_data is used.
+            append_ndvi (bool): Whether to compute the NDVI and append it to the input features.
             verbose: Whether to print progress information
 
         Returns:
@@ -251,6 +253,7 @@ class SatelliteClassifier(LightningModule):
             tmax_data=tmax_data,
             tmin_inference=tmin_inference,
             tmax_inference=tmax_inference,
+            append_ndvi=append_ndvi
         )
 
         # (model, c, all_boas, times, validity_mask, n_obs, mean, stddev, batch_size,
@@ -259,16 +262,10 @@ class SatelliteClassifier(LightningModule):
                                     inference_date_mask, verbose, apply_argmax, num_classes)
 
         if apply_argmax:
-            # TODO: Reorder before argmax! Right now it's a trap!
             output = output.reshape(h, w).cpu().numpy()
         else:
             # output is softmaxed
             output = output.reshape(h, w, num_classes).cpu().numpy()
-
-            # TODO: move this logic into predict_on_batches!
-            if band_reordering:
-                print("reordering bands")
-                output = output[:, :, list(band_reordering)]
 
         if save:
             if output_filepath is None:

@@ -35,6 +35,13 @@ WVP_NONE     = 0b100000000000000
 CLOUD_OR_NODATA = NODATA | CLOUD_BUFFER | CLOUD_CIRRUS | CLOUD_OPAQUE | CLOUD_SHADOW
 
 
+def ndvi(v):
+    """Computes the NDVI for v, where v contains the 10 S2 bands."""
+    red = 3
+    nir = 4
+    return (v[nir] - v[red]) / (v[nir] + v[red] + 1e-7)
+
+
 class InMemoryImageClassificationDataset(Dataset):
     def __init__(self,
                  file_paths: list[str],
@@ -134,6 +141,7 @@ class InMemoryTimeSeriesDataset(Dataset):
                  plot_ids: tuple = None,
                  num_workers: int = 0,
                  where: str = "",
+                 append_ndvi: bool = False,
                  eliminate_nodata: bool = False,
                  mean=np.zeros(10),
                  stddev=np.ones(10) * 10000,
@@ -164,6 +172,8 @@ class InMemoryTimeSeriesDataset(Dataset):
             num_workers: Dataloader worker count
             where: SQL Where clause to filter data while loading, e.g. `species > 100 AND is_pure = TRUE` to select only
                 deciduous trees from pure stands.
+            append_ndvi (bool): Whether or not to append the NDVI to the BOA values. If True, you have to increase the
+                number of satellite channels by one.
             eliminate_nodata: Whether to remove all records where the first BOA band has a value smaller than -5000.
             mean: Numpy vector representing the band-wise mean of the data. Is used for normalization.
             stddev: Numpy vector representing the band-wise standard deviation of the data. Is used for normalization.
@@ -209,6 +219,11 @@ class InMemoryTimeSeriesDataset(Dataset):
                                              (self.df.disturbance_year >= 2011) & (self.df.disturbance_year <= 2014)))]
         # or that are spruce and not continuously present until 2022
         self.df = self.df[np.logical_or(self.df.species != 10, self.df.present_2022)]
+
+        # eventually compute NDVI for the remaining data
+        if append_ndvi:
+            self.df["boa"] = [v.append(ndvi(v)) for v in self.df["boa"]]
+
         self.df = self.df.drop(["disturbance_year", "present_2022", "qai"], axis=1)
         self.df.sort_values("time", inplace=True)
         self.df = self.df.drop(["time"], axis=1)

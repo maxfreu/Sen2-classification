@@ -333,7 +333,8 @@ def load_and_prepare_timeseries_folder(input_folder: str,
                                        tmin_data=datetime.date(1, 1, 1),
                                        tmax_data=datetime.date(9999, 1, 1),
                                        tmin_inference=None,
-                                       tmax_inference=None
+                                       tmax_inference=None,
+                                       append_ndvi=False,
                                        ):
     """Loads all `seq_len` last BOA and QAI files from the given input folder. Depending on seq_len, \
     this needs lots of RAM.
@@ -400,13 +401,25 @@ def load_and_prepare_timeseries_folder(input_folder: str,
     # print("Loading images")
     sample_boa = read_img(os.path.join(input_folder, boa_filenames[0]), dim_ordering="HWC", dtype=np.int16)
     h, w, c = sample_boa.shape
+
+    if append_ndvi:
+        c += 1
+
     all_boas = np.empty((h, w, seq_len, c), dtype=np.int16)
 
     # read all the files
     for (i, f) in enumerate(boa_filenames):
         fname = os.path.join(input_folder, f)
         img = read_img(fname, dim_ordering="HWC", dtype=np.int32)
-        all_boas[:, :, i, :] = img
+        if append_ndvi:
+            all_boas[:, :, i, :-1] = img
+        else:
+            all_boas[:, :, i, :] = img
+
+    if append_ndvi:
+        red = all_boas[:, :, :, 3]
+        nir = all_boas[:, :, :, 4]
+        all_boas[:, :, :, -1] = (nir - red) / (nir + red + 1e-7)
 
     all_boas = all_boas.reshape((-1, seq_len, c))
 
@@ -602,7 +615,7 @@ def save_dict_to_yaml(data, filename):
 
 
 def predict_on_batches(model, all_boas, times, validity_mask, n_obs, mean, stddev, batch_size,
-                       inference_date_mask, verbose, apply_argmax=True, num_classes=0):
+                       inference_date_mask, verbose, apply_argmax=True, num_classes=0, band_reordering=None):
         num_output_pixels = all_boas.shape[0]
         seq_len = all_boas.shape[1]
         c = all_boas.shape[2]  # channels
@@ -690,6 +703,10 @@ def predict_on_batches(model, all_boas, times, validity_mask, n_obs, mean, stdde
             print("Prediction time: ", time() - t0)
 
         final_output[valid_pixel_mask] = output
+
+        if band_reordering:
+            # that was a joke, the final output is not final yet
+            final_output = final_output[:, :, list(band_reordering)]
 
         return final_output
 

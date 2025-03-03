@@ -69,9 +69,6 @@ def main():
         mean   = np.array(normalization["mean"]).astype(np.float32)
         stddev = np.array(normalization["stddev"]).astype(np.float32)
 
-    # model_params = model_config["model"]#["init_args"]
-    # model = SBERTClassifier.load_from_checkpoint(ckpt, num_classes=14, **model_params)
-    # model = SBERTClassifier.load_from_checkpoint(ckpt, **model_params)
     model, _ = utils.load_model_from_configs_and_checkpoint(model_config_path, data_config_path, ckpt)
     model.to("cuda")
     model.eval()
@@ -94,7 +91,8 @@ def main():
                                tmin_data=tmin_data,
                                tmax_data=tmax_data,
                                tmin_inference=tmin_inference,
-                               tmax_inference=tmax_inference
+                               tmax_inference=tmax_inference,
+                               append_ndvi=data_config["data"]["append_ndvi"]
                                )
 
 #%%

@@ -706,7 +706,7 @@ def predict_on_batches(model, all_boas, times, validity_mask, n_obs, mean, stdde
 
         if band_reordering:
             # that was a joke, the final output is not final yet
-            final_output = final_output[:, :, list(band_reordering)]
+            final_output = final_output[:, list(band_reordering)]
 
         return final_output
 

@@ -197,7 +197,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         # inv_stddev = 1 / (stddev.astype(np.float32) + 1e-7)
         # self.df.boa = [(np.frombuffer(x, dtype=np.int16).astype(np.float32) - mean) * inv_stddev for x in self.df.boa]
         # convert the bytes to a numpy array
-        self.df.boa = self.convert_bytearrays_to_numpy(self.df.boa, mean, stddev)
+        self.df.boa = self.convert_bytearrays_to_numpy(self.df.boa, mean, stddev, append_ndvi)
 
         # throw out all values smaller -5000
         # would be faster to remove all this in the file itself...

@@ -89,7 +89,7 @@ def main():
                                tmax_data=tmax_data,
                                tmin_inference=tmin_inference,
                                tmax_inference=tmax_inference,
-                               append_ndvi=data_config["append_ndvi"]
+                               append_ndvi=data_config.get("append_ndvi", False)
                                )
 
 #%%

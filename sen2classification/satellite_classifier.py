@@ -259,7 +259,7 @@ class SatelliteClassifier(LightningModule):
         # (model, c, all_boas, times, validity_mask, n_obs, mean, stddev, batch_size,
         #  inference_date_mask, verbose)
         output = predict_on_batches(self, all_boas, times, validity_mask, n_obs, mean, stddev, batch_size,
-                                    inference_date_mask, verbose, apply_argmax, num_classes)
+                                    inference_date_mask, verbose, apply_argmax, num_classes, band_reordering)
 
         if apply_argmax:
             output = output.reshape(h, w).cpu().numpy()

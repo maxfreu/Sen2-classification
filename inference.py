@@ -62,12 +62,9 @@ def main():
     tmax_inference = date(*[int(x) for x in args.tmax_inference.split("-")]) if args.tmax_inference else tmax_data
 
     with open(data_config_path, "r") as f:
-        data_config = yaml.safe_load(f)
-
-    with open("configs/statistics_223_g-5k.yaml", "r") as f:
-        normalization = yaml.safe_load(f)["data"]
-        mean   = np.array(normalization["mean"]).astype(np.float32)
-        stddev = np.array(normalization["stddev"]).astype(np.float32)
+        data_config = yaml.safe_load(f)["data"]
+        mean   = np.array(data_config["mean"]).astype(np.float32)
+        stddev = np.array(data_config["stddev"]).astype(np.float32)
 
     model, _ = utils.load_model_from_configs_and_checkpoint(model_config_path, data_config_path, ckpt)
     model.to("cuda")
@@ -80,7 +77,7 @@ def main():
                                qai=qai,
                                output_filepath=output_filepath,
                                verbose=False,
-                               time_encoding=data_config["data"]["time_encoding"],
+                               time_encoding=data_config["time_encoding"],
                                mean=mean,
                                stddev=stddev,
                                batch_size=2048,
@@ -92,7 +89,7 @@ def main():
                                tmax_data=tmax_data,
                                tmin_inference=tmin_inference,
                                tmax_inference=tmax_inference,
-                               append_ndvi=data_config["data"]["append_ndvi"]
+                               append_ndvi=data_config["append_ndvi"]
                                )
 
 #%%

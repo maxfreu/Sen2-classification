@@ -399,18 +399,18 @@ def load_and_prepare_timeseries_folder(input_folder: str,
         raise RuntimeError(f"Argument time_encoding must be either doy or absolute, not {time_encoding}.")
 
     # print("Loading images")
-    sample_boa = read_img(os.path.join(input_folder, boa_filenames[0]), dim_ordering="HWC", dtype=np.float32 if append_ndvi else np.int16)
+    sample_boa = read_img(os.path.join(input_folder, boa_filenames[0]), dim_ordering="HWC", dtype=np.int16)
     h, w, c = sample_boa.shape
 
     if append_ndvi:
         c += 1
 
-    all_boas = np.empty((h, w, seq_len, c), dtype=np.int16)
+    all_boas = np.empty((h, w, seq_len, c), dtype=np.float32 if append_ndvi else np.int16)
 
     # read all the files
     for (i, f) in enumerate(boa_filenames):
         fname = os.path.join(input_folder, f)
-        img = read_img(fname, dim_ordering="HWC", dtype=np.int32)
+        img = read_img(fname, dim_ordering="HWC", dtype=np.float32)
         if append_ndvi:
             all_boas[:, :, i, :-1] = img
         else:

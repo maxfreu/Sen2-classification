@@ -207,7 +207,9 @@ def validate(checkpoint_folder, val_ds, return_mode="single", num_workers=0):
             qai=dataconfig["quality_mask"],
             mean=dataconfig["mean"],
             stddev=dataconfig["stddev"],
-            return_mode=return_mode)
+            return_mode=return_mode,
+            append_ndvi=dataconfig["append_ndvi"]
+        )
 
         t2 = time.time()
         print(f"Validating exploratories took {t2-t1}s.")
@@ -227,7 +229,9 @@ def validate(checkpoint_folder, val_ds, return_mode="single", num_workers=0):
             seq_len=seq_len,
             qai=dataconfig["quality_mask"],
             mean=dataconfig["mean"],
-            stddev=dataconfig["stddev"])
+            stddev=dataconfig["stddev"],
+            append_ndvi=dataconfig["append_ndvi"]
+        )
 
         t3 = time.time()
         print(f"Validating TreeSatAI took {t3-t2}s.")

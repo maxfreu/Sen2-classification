@@ -74,6 +74,7 @@ def validate_exploratories(model,
                            stddev=np.ones(10) * 10000,
                            species_codes_csv="/data_hdd/bwi/baumarten.csv",
                            exploratories_file="/data_hdd/exploratories/treedata_2018.gpkg",
+                           append_ndvi=False
                            ):
     model = model.eval()
     num_classes = len(set(class_mapping.values()))
@@ -98,7 +99,8 @@ def validate_exploratories(model,
                                         tmax_data= datetime.date(2019, 1, 1),
                                         fname2date=fname2date,
                                         mean=mean,
-                                        stddev=stddev)
+                                        stddev=stddev,
+                                        append_ndvi=append_ndvi)
              for subfolder in subfolders]
 
     # read NFI species codes

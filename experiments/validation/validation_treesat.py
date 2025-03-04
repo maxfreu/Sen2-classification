@@ -5,7 +5,7 @@ import numpy as np
 from .validation_exploratories import kl_divergence
 
 
-def validate_treesat(model, treesat_dir, class_mapping, time_encoding, return_mode, seq_len, qai, mean, stddev):
+def validate_treesat(model, treesat_dir, class_mapping, time_encoding, return_mode, seq_len, qai, mean, stddev, append_ndvi):
     model = model.eval()
 
     treesat_species_dict = {
@@ -99,7 +99,8 @@ def validate_treesat(model, treesat_dir, class_mapping, time_encoding, return_mo
                     stddev=stddev,
                     time_encoding=time_encoding,
                     apply_argmax=False,
-                    num_classes=num_classes
+                    num_classes=num_classes,
+                    append_ndvi=append_ndvi
                 )
 
                 # predictions are scaled to uint8 0-255 to save memory, scale back:

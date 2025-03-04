@@ -417,8 +417,8 @@ def load_and_prepare_timeseries_folder(input_folder: str,
             all_boas[:, :, i, :] = img
 
     if append_ndvi:
-        red = all_boas[:, :, :, 3]
-        nir = all_boas[:, :, :, 4]
+        red = all_boas[:, :, :, 2]
+        nir = all_boas[:, :, :, 6]
         all_boas[:, :, :, -1] = (nir - red) / (nir + red + 1e-7)
 
     all_boas = all_boas.reshape((-1, seq_len, c))

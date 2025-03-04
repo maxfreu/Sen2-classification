@@ -36,9 +36,9 @@ CLOUD_OR_NODATA = NODATA | CLOUD_BUFFER | CLOUD_CIRRUS | CLOUD_OPAQUE | CLOUD_SH
 
 
 def ndvi(v):
-    """Computes the NDVI for v, where v contains the 10 S2 bands."""
-    red = 3
-    nir = 4
+    """Computes the NDVI for v, where v contains the 10 S2 bands. Uses B8 and B4."""
+    red = 2
+    nir = 6
     return (v[nir] - v[red]) / (v[nir] + v[red] + 1e-7)
 
 
@@ -172,7 +172,7 @@ class InMemoryTimeSeriesDataset(Dataset):
             num_workers: Dataloader worker count
             where: SQL Where clause to filter data while loading, e.g. `species > 100 AND is_pure = TRUE` to select only
                 deciduous trees from pure stands.
-            append_ndvi (bool): Whether or not to append the NDVI to the BOA values. If True, you have to increase the
+            append_ndvi (bool): Whether to append the NDVI to the BOA values. If True, you have to increase the
                 number of satellite channels by one.
             eliminate_nodata: Whether to remove all records where the first BOA band has a value smaller than -5000.
             mean: Numpy vector representing the band-wise mean of the data. Is used for normalization.
@@ -219,11 +219,6 @@ class InMemoryTimeSeriesDataset(Dataset):
                                              (self.df.disturbance_year >= 2011) & (self.df.disturbance_year <= 2014)))]
         # or that are spruce and not continuously present until 2022
         self.df = self.df[np.logical_or(self.df.species != 10, self.df.present_2022)]
-
-        # eventually compute NDVI for the remaining data
-        if append_ndvi:
-            self.df["boa"] = [v.append(ndvi(v)) for v in self.df["boa"]]
-
         self.df = self.df.drop(["disturbance_year", "present_2022", "qai"], axis=1)
         self.df.sort_values("time", inplace=True)
         self.df = self.df.drop(["time"], axis=1)
@@ -242,12 +237,18 @@ class InMemoryTimeSeriesDataset(Dataset):
         self.num_classes = len(self.classes)
 
     @staticmethod
-    def convert_bytearrays_to_numpy(bytearray_series, mean, stddev):
+    def convert_bytearrays_to_numpy(bytearray_series, mean, stddev, append_ndvi):
         mean = np.array(mean)
         stddev = np.array(stddev)
         inv_stddev = (1 / (stddev + 1e-7)).astype(np.float32)
         concatenated_bytes = b''.join(bytearray_series.to_list())
         boa = np.frombuffer(concatenated_bytes, dtype=np.int16).astype(np.float32).reshape(len(bytearray_series), -1)
+        if append_ndvi:
+            red = boa[:, 2]
+            nir = boa[:, 6]
+            ndvi = (nir - red) / (nir + red + 1e-5)
+            ndvi = np.clip(ndvi, -1, 1)
+            boa = np.column_stack((boa, ndvi))
         boa = (boa - mean) * inv_stddev
         return list(boa)
 

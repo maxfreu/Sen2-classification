@@ -16,6 +16,8 @@ from torch.utils.data import IterableDataset
 # import numba
 gdal.UseExceptions()
 
+from .models.sitsbert.model.embedding.position import PositionalEncoding
+
 
 def save_pandas_as_sqlite(outfile, dataframes, table_names, overwrite=False):
     if os.path.exists(outfile) and not overwrite:
@@ -555,18 +557,36 @@ def instantiate_model_from_config(config_path, **override_kwargs):
     return class_(**init_args), init_args
 
 
-def load_model_from_configs_and_checkpoint(model_config, data_config, checkpoint_path):
-    with open(data_config) as f:
+def load_model_from_configs_and_checkpoint(model_config_path, data_config_path, checkpoint_path):
+    with open(data_config_path, 'r') as f:
         dataconfig = yaml.safe_load(f)
+
+    with open(model_config_path, 'r') as file:
+        model_config = yaml.safe_load(file)["model"]
 
     classes = list(sorted(set(dataconfig["data"]["class_mapping"].values())))
     num_classes = len(classes)
-    model, init_args = instantiate_model_from_config(config_path=model_config,
-                                                     num_classes=num_classes,
-                                                     classes=classes)
 
-    state_dict = torch.load(checkpoint_path, map_location=model.device)["state_dict"]
-    model.load_state_dict(state_dict)
+    state_dict = torch.load(checkpoint_path, map_location="cpu")["state_dict"]
+
+    # fix latest possible inference date by increasing the max_time....
+    max_time_state_dict = state_dict["pos_embed.pos_embed.pos_embed"].shape[0]
+    max_time_config = model_config["init_args"]["max_time"]
+
+    model, init_args = instantiate_model_from_config(config_path=model_config_path,
+                                                     num_classes=num_classes,
+                                                     classes=classes,
+                                                     max_time=max_time_state_dict)
+
+    if max_time_state_dict == max_time_config:
+        model.load_state_dict(state_dict)
+    else:
+        model.load_state_dict(state_dict)
+        embedding_dim = model_config["init_args"]["embedding_dim"]
+        if model_config["init_args"]["embedding_type"] == "concat":
+            embedding_dim //= 2
+        model.pos_embed.pos_embed = PositionalEncoding(embedding_dim=embedding_dim, max_len=max_time_config)
+
     return model, init_args
 
 # def load_model_from_config_and_checkpoint(config, checkpoint_path):

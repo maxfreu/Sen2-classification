@@ -14,7 +14,7 @@ for train_seq_len in (32,64,128):
     version = f"train_seq_len={train_seq_len}"
 
     for model_config in ("configs/transformer.yaml", "configs/gru.yaml"):
-        data, dataconfig = load_data(data_args={"sequence_length": train_seq_len,
+        data, dataconfig = load_data(overwrite_args={"sequence_length": train_seq_len,
                                                 "mean": norm_config["mean"],
                                                 "stddev": norm_config["stddev"]})
 

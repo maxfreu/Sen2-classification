@@ -12,7 +12,7 @@ for return_mode in ("single", "double", "random"):
     version = f"return_mode={return_mode}"
 
     for model_config in ("configs/transformer.yaml", "configs/gru.yaml"):
-        data, dataconfig = load_data(data_args={"sequence_length": 128,
+        data, dataconfig = load_data(overwrite_args={"sequence_length": 128,
                                                 "mean": norm_config["mean"],
                                                 "stddev": norm_config["stddev"],
                                                 "return_mode": return_mode})

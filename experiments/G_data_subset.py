@@ -1,11 +1,13 @@
+import os
 import yaml
 from experiments.train_and_validate import train_and_validate, load_data
+
+myid = int(os.environ["SLURM_ARRAY_TASK_ID"])
 
 logdir = "output"
 experiment_name = "data_subset"
 
-
-subsets = {"all": "",
+subsets = {"all": "true",
            "continuous": "present_2022 = 1",
            "pure": "is_pure = 1",
            "large": "crown_area_m2 > 10 or crown_area_m2 = 0",
@@ -18,21 +20,29 @@ with open("/home/max/dr/Sen2-classification/configs/statistics_223_g-5k.yaml", "
     mean = norm["mean"]
     stddev = norm["stddev"]
 
-for name, where in subsets.items():
-    # train on data subset, but validate against all data
-    data, dataconfig = load_data(data_args={"where": where, "val_where": "", "mean": mean, "stddev": stddev, "sequence_length": 32})
+name, where = list(subsets.items())[myid]
 
-    version = f"subset={name}"
+# for name, where in subsets.items():
+# train on data subset, but validate against all data
+data, dataconfig = load_data(
+    overwrite_args={"where": f"({where}) AND time < 1609459200",
+                    "val_where": "(1577836800 <= time and time < 1672531200 and present_2022=1)",
+                    "mean": mean,
+                    "stddev": stddev,
+                    "time_encoding": "doy"})
 
-    for model_config in ("configs/gru.yaml", "configs/transformer.yaml"):
-        train_and_validate(model_config,
-                           data,
-                           dataconfig | {"normalization": "223_g-5k", "subset": name},
-                           logdir,
-                           experiment_name=experiment_name,
-                           version=version,
-                           experiment_file=__file__,
-                           model_extra_args={"num_classes": data.num_classes,
-                                             "classes": data.classes,
-                                             "loss_weights": data.loss_weights, },
-                           )
+version = f"subset={name}"
+
+for model_config in ("configs/gru_small.yaml",):
+    train_and_validate(model_config,
+                       data,
+                       dataconfig | {"normalization": "223_g-5k", "subset": name},
+                       logdir,
+                       experiment_name=experiment_name,
+                       version=version,
+                       experiment_file=__file__,
+                       model_extra_args={"num_classes": data.num_classes,
+                                         "classes": data.classes,
+                                         "loss_weights": data.loss_weights, },
+                       val_years=(2020,2021,2022)
+                       )

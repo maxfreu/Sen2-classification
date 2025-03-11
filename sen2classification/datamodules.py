@@ -94,6 +94,9 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                  where: str = "",
                  val_where: str = "none",
                  append_ndvi: bool = False,
+                 eliminate_nodata: bool = False,
+                 augmentation_strength: float = 0.02,
+                 time_shift: int = 4,
                  pickle_path: str = "/tmp",
                  mean=np.zeros(10),
                  stddev=np.ones(10) * 10000,
@@ -117,6 +120,9 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.where = where
         self.val_where = val_where if val_where != "none" else where
         self.append_ndvi = append_ndvi
+        self.eliminate_nodata = eliminate_nodata
+        self.augmentation_strength = augmentation_strength
+        self.time_shift = time_shift
         self.pickle_path = pickle_path
         self.mean = np.array(mean)
         self.stddev = np.array(stddev)
@@ -129,7 +135,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.val_ids = val_ids
 
     def train_augmentation(self, boa_observation):
-        return boa_observation * (0.98 + np.random.rand(self.satellite_input_channels)*0.04)
+        return boa_observation * ((1 - self.augmentation_strength) + np.random.rand(self.satellite_input_channels) * 2 * self.augmentation_strength)
 
     def setup(self, stage=None) -> None:
         if self.is_setup:
@@ -147,6 +153,9 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         else:
             val_where = self.val_where
 
+        print(f"Where clause for loading training data: {train_where}")
+        print(f"Where clause for loading validation data: {val_where}")
+
         print(f"Loading training dataset.")
         t0 = time.time()
         self.training_data = InMemoryTimeSeriesDataset(self.input_filepath,
@@ -160,6 +169,8 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                        time_encoding=self.time_encoding,
                                                        where=train_where,
                                                        append_ndvi=self.append_ndvi,
+                                                       time_shift=self.time_shift,
+                                                       eliminate_nodata=self.eliminate_nodata,
                                                        plot_ids=self.train_ids,
                                                        mean=self.mean,
                                                        stddev=self.stddev
@@ -178,6 +189,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                   time_encoding=self.time_encoding,
                                                   where=val_where,
                                                   append_ndvi=self.append_ndvi,
+                                                  eliminate_nodata=self.eliminate_nodata,
                                                   plot_ids=self.val_ids,
                                                   mean=self.mean,
                                                   stddev=self.stddev

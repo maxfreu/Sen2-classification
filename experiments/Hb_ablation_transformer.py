@@ -11,7 +11,7 @@ experiment_name = "architecture_opt"
 with open(f"configs/statistics_223_g-5k.yaml") as f:
     norm_config = yaml.safe_load(f)["data"]
 
-data, dataconfig = load_data(data_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
+data, dataconfig = load_data(overwrite_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
 
 params = list(itertools.product((4,6,8), (256,), (4,8,16)))
 num_layers, hidden_dim, num_attention_heads = params[myid]

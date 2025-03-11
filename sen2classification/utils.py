@@ -543,13 +543,16 @@ def instantiate_model_from_config(config_path, **override_kwargs):
         config = yaml.safe_load(file)
 
     class_path = config['model']['class_path']
-    init_args = {k: parse_value(v) for k, v in config['model']['init_args'].items()}
-    init_args.update({k: parse_value(v) for k, v in override_kwargs.items()})
 
-    class_path = "<class 'sen2classification.models.gru.GRU'>"
-    class_path = class_path[8:-2]
+    # class_path = "<class 'sen2classification.models.gru.GRU'>"
+    if class_path[0] == "<":
+        class_path = class_path[8:-2]
+
     module_name = '.'.join(class_path.split('.')[:-1])
     class_name = class_path.split('.')[-1]
+
+    init_args = {k: parse_value(v) for k, v in config['model']['init_args'].items()}
+    init_args.update({k: parse_value(v) for k, v in override_kwargs.items()})
 
     module = importlib.import_module(module_name)
     class_ = getattr(module, class_name)

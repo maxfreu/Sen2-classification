@@ -15,7 +15,7 @@ for use_weighted_loss in (True,):
     version = f"weighted_loss={use_weighted_loss}"
 
     for model_config in ("configs/gru.yaml", "configs/transformer.yaml"):
-        data, dataconfig = load_data(data_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
+        data, dataconfig = load_data(overwrite_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
 
         train_and_validate(model_config,
                            data,

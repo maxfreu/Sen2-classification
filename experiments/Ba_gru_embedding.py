@@ -14,7 +14,7 @@ for embedding_type in (None, "bert", "concat"):
         # skip combinations that make no sense
         if (embedding_type is None and embedding_dim is not None) or (embedding_type is not None and embedding_dim is None):
             continue
-        data, dataconfig = load_data(data_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
+        data, dataconfig = load_data(overwrite_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
 
         version = f"embedding_type={embedding_type}_embedding_dim={embedding_dim}_seq_len={dataconfig['sequence_length']}"
 

@@ -22,7 +22,7 @@ with open(f"/home/max/dr/Sen2-classification/configs/statistics_223_g-5k.yaml") 
 ################################################
 version = f"3classes"
 data_3classes, dataconfig_3classes = load_data(dataconfigfile="configs/3_classes.yaml",
-                                               data_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
+                                               overwrite_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
 
 model_3classes, output_folder_3classes, best_model_path_3classes, logger, init_args_3classes = train(
     model_config,
@@ -41,7 +41,7 @@ model_3classes, output_folder_3classes, best_model_path_3classes, logger, init_a
 ###############
 version = f"coniferous"
 data_coniferous, dataconfig_coniferous = load_data(dataconfigfile="configs/coniferous.yaml",
-                                                   data_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
+                                                   overwrite_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
 
 model_coniferous, output_folder, best_model_path_coniferous, logger, init_args = train(
     model_config,
@@ -61,7 +61,7 @@ model_coniferous, output_folder, best_model_path_coniferous, logger, init_args =
 #############
 version = f"broadleaf"
 data_broadleaf, dataconfig_broadleaf = load_data(dataconfigfile="configs/broadleaf.yaml",
-                                                 data_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
+                                                 overwrite_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
 
 model_broadleaf, output_folder, best_model_path_broadleaf, logger, init_args = train(
     model_config,
@@ -123,7 +123,7 @@ model_hierarchical = model_hierarchical.to(device)
 
 #%%
 data_all, dataconfig_all = load_data(dataconfigfile="/home/max/dr/Sen2-classification/configs/14_classes.yaml",
-                                     data_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
+                                     overwrite_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
 
 #%%
 model_name = f"{experiment_name}_{utils.classname(model_hierarchical)}"

@@ -128,7 +128,7 @@ with open(f"/home/max/dr/Sen2-classification/configs/statistics_223_g-5k.yaml") 
     norm_config = yaml.safe_load(f)["data"]
 
 data, dataconfig = load_data(dataconfigfile="/home/max/dr/Sen2-classification/configs/14_classes.yaml",
-                             data_args={"mean": norm_config["mean"],
+                             overwrite_args={"mean": norm_config["mean"],
                                         "stddev": norm_config["stddev"]})
 
 init_args["cosine_init_period"] = 0

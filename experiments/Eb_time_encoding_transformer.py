@@ -20,7 +20,7 @@ for time_encoding in ("doy", "absolute"):
         version = f"time_encoding={time_encoding}-return_mode={return_mode}"
 
         for model_config in ("configs/transformer.yaml",):
-            data, dataconfig = load_data(data_args={"time_encoding": time_encoding,
+            data, dataconfig = load_data(overwrite_args={"time_encoding": time_encoding,
                                                     "return_mode": return_mode,
                                                     "mean": norm_config["mean"],
                                                     "stddev": norm_config["stddev"]})

@@ -13,7 +13,7 @@ for normalization in ("10k", "223", "223_same", "223_g-5k", "223_g-5k_same", "al
     version = f"data_normalization={normalization}"
 
     for model_config in ("configs/gru.yaml", "configs/transformer.yaml"):
-        data, dataconfig = load_data(data_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
+        data, dataconfig = load_data(overwrite_args={"mean": norm_config["mean"], "stddev": norm_config["stddev"]})
 
         train_and_validate(model_config,
                            data,

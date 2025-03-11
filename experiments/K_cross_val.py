@@ -18,8 +18,8 @@ from sen2classification.datamodules import seed_worker
 from experiments.train_and_validate import train_and_validate, load_data
 
 
-def get_tree_ids(file):
-    ids = duckdb.query(f"select distinct(tree_id) from '{file}' order by tree_id asc").fetchnumpy()["tree_id"]
+def get_tnrs(file):
+    ids = duckdb.query(f"select distinct(tnr) from '{file}' order by tnr asc").fetchnumpy()["tnr"]
     return [int(id) for id in ids]  # ids are np.int32 which breaks yaml serialization
 
 #%%
@@ -110,11 +110,11 @@ experiment_name = "cross_validation"
 
 model_config = "configs/gru.yaml"
 
-tree_ids = get_tree_ids(dataconfig["input_file"])
+tract_ids = get_tnrs(dataconfig["input_file"])
 classes = list(sorted(set(dataconfig["class_mapping"].values())))
 num_classes = len(classes)
 num_folds = 5
-gen = k_fold_generator_list(tree_ids, num_folds, test_fraction=0.2)
+gen = k_fold_generator_list(tract_ids, num_folds, test_fraction=0.2)
 
 #%%
 # for i in range(num_folds):
@@ -128,7 +128,7 @@ for j in range(int(os.environ["SLURM_ARRAY_TASK_ID"])):
     train_indices, val_indices = next(gen)
     i = j
 
-data, dataconfig = load_data(data_args={
+data, dataconfig = load_data(overwrite_args={
     "mean": norm_config["mean"],
     "stddev": norm_config["stddev"],
     "train_ids": list(train_indices),

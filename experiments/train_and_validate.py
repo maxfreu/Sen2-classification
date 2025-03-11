@@ -18,14 +18,14 @@ from .validation.validation_exploratories import validate_exploratories
 from .validation.val_utils import checkpoint_folder_to_configfile, instantiate_model_from_checkpoint_folder_and_classname
 
 
-def load_data(dataconfigfile = "/home/max/dr/Sen2-classification/configs/14_classes.yaml", data_args=None):
-    if data_args is None:
-        data_args = {}
+def load_data(dataconfigfile = "/home/max/dr/Sen2-classification/configs/14_classes.yaml", overwrite_args=None):
+    if overwrite_args is None:
+        overwrite_args = {}
 
     with open(dataconfigfile, "r") as f:
         dataconfig = yaml.safe_load(f)["data"]
 
-    dataconfig = dataconfig | data_args
+    dataconfig = dataconfig | overwrite_args
 
     if not os.path.exists(dataconfig["input_file"]):
         print("[WARNING] Falling back to data loading from remote HDD.")
@@ -106,8 +106,9 @@ def train(model_config, data, logdir, experiment_name, version, model_extra_args
     return model, output_folder, mc.best_model_path, logger, init_args
 
 
-def validate(checkpoint_folder, val_ds, return_mode="single", num_workers=0):
+def validate(checkpoint_folder, val_ds, return_mode="single", val_years=(2018, 2020, 2022), num_workers=0):
     """Validate the best trained model and compute metrics."""
+    print("Starting validation")
     tstart = time.time()
 
     # load config stuff
@@ -167,13 +168,13 @@ def validate(checkpoint_folder, val_ds, return_mode="single", num_workers=0):
     )
 
     metrics = {}
-    years = (2018, 2020, 2022)
+    # years = (2018, 2020, 2022)
     # for seq_len in (64, 128):
     for seq_len in (64,):
         print(f"Validating S2GNFI for seq_len={seq_len}")
         t0 = time.time()
         accs_ds = []
-        for year in years:
+        for year in val_years:
             val_ds.sequence_length = seq_len
             val_ds.return_year = year
             val_ds.return_mode = return_mode
@@ -208,7 +209,7 @@ def validate(checkpoint_folder, val_ds, return_mode="single", num_workers=0):
             mean=dataconfig["mean"],
             stddev=dataconfig["stddev"],
             return_mode=return_mode,
-            append_ndvi=dataconfig["append_ndvi"]
+            append_ndvi=dataconfig.get("append_ndvi", False)
         )
 
         t2 = time.time()
@@ -230,7 +231,7 @@ def validate(checkpoint_folder, val_ds, return_mode="single", num_workers=0):
             qai=dataconfig["quality_mask"],
             mean=dataconfig["mean"],
             stddev=dataconfig["stddev"],
-            append_ndvi=dataconfig["append_ndvi"]
+            append_ndvi=dataconfig.get("append_ndvi", False)
         )
 
         t3 = time.time()
@@ -258,7 +259,7 @@ def validate(checkpoint_folder, val_ds, return_mode="single", num_workers=0):
 
         metrics = metrics | metrics_this_seq_len
 
-        write_report(output_folder, f"seq_len={seq_len}", years, metrics | {f"acc_ds_seq_len={seq_len}": accs_ds})
+        write_report(output_folder, f"seq_len={seq_len}", val_years, metrics | {f"acc_ds_seq_len={seq_len}": accs_ds})
 
     # Restore the previous state
     for key, value in previous_state.items():
@@ -275,7 +276,8 @@ def validate(checkpoint_folder, val_ds, return_mode="single", num_workers=0):
 
 
 def train_and_validate(model_config, data, dataconfig, logdir, experiment_name, version, model_extra_args={},
-                       trainer_extra_args={}, experiment_file="", do_validation=True, val_return_mode="single"):
+                       trainer_extra_args={}, experiment_file="", do_validation=True, val_return_mode="single",
+                       val_years=(2018, 2020, 2022)):
     """Wrapper function to train and validate the model."""
     model, output_folder, _, _, init_args = train(
         model_config=model_config,
@@ -297,6 +299,7 @@ def train_and_validate(model_config, data, dataconfig, logdir, experiment_name, 
             checkpoint_folder=os.path.join(output_folder, "checkpoints"),
             val_ds=data.val_data,
             return_mode=val_return_mode,
+            val_years=val_years,
             num_workers=len(os.sched_getaffinity(0)) // 2
         )
     else:

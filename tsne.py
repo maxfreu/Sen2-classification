@@ -37,7 +37,7 @@ model.eval()
 # model = torch.compile(model)
 
 #%%
-data = experiments.train_and_validate.load_data(data_args=dataconfig | {"where": "tree_id < -70000"})
+data = experiments.train_and_validate.load_data(overwrite_args=dataconfig | {"where": "tree_id < -70000"})
 #%%
 test_dataset = InMemoryTimeSeriesDataset(
     # input_filepath=dataconfig["input_file"],

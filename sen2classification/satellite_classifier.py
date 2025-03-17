@@ -1,6 +1,4 @@
 import os
-from typing import Dict, Any, Optional
-
 import torch
 import datetime
 import numpy as np
@@ -9,17 +7,14 @@ import pandas as pd
 from glob import glob
 from uuid import uuid4
 
-from torch.optim import AdamW
 from pytorch_lightning import LightningModule
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
-from torchmetrics import Accuracy, ConfusionMatrix, MetricCollection
-from sen2classification.utils import GeneratorDataset, read_img, array_to_tif, predict_on_batches
-from .utils import load_and_prepare_timeseries_folder, assemble_batch_cpu
+from torchmetrics import Accuracy, MetricCollection
+from sen2classification.utils import array_to_tif, predict_on_batches
+from .utils import load_and_prepare_timeseries_folder
 from sklearn.metrics import confusion_matrix
-from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingWarmRestarts, SequentialLR
 from schedulefree import AdamWScheduleFree
 from sen2classification.focalloss import FocalLoss
-from filelock import FileLock
 
 
 class SatelliteClassifier(LightningModule):
@@ -105,25 +100,6 @@ class SatelliteClassifier(LightningModule):
     def configure_optimizers(self):
         optimizer = AdamWScheduleFree(self.parameters(), lr=self.lr, warmup_steps=self.warmup_steps)
         return optimizer
-
-        # optimizer = AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-        # if self.cosine_init_period > 0:
-        #     scheduler = CosineAnnealingWarmRestarts(optimizer, self.cosine_init_period, T_mult=2, eta_min=1e-6, last_epoch=-1)
-        #
-        #     def warmup(current_step: int):
-        #         return current_step / self.warmup_steps
-        #
-        #     warmup_scheduler = LambdaLR(optimizer, lr_lambda=warmup)
-        #     scheduler = SequentialLR(optimizer, [warmup_scheduler, scheduler], [self.warmup_steps])
-        #
-        #     return {"optimizer": optimizer,
-        #             "lr_scheduler": {
-        #                 "scheduler": scheduler,
-        #                 "interval": "step",
-        #                 }
-        #             }
-        # else:
-        #     return optimizer
 
     @rank_zero_only
     def test_on_dataloader(self, dataloader):

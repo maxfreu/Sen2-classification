@@ -5,8 +5,7 @@ import numpy as np
 from glob import glob
 from uuid import uuid4
 from torch.nn.functional import one_hot
-from .utils import array_to_tif, assemble_batch_cpu, load_and_prepare_timeseries_folder, predict_on_batches
-from pytorch_lightning import LightningModule
+from .utils import array_to_tif, load_and_prepare_timeseries_folder, predict_on_batches
 from sen2classification.satellite_classifier import SatelliteClassifier
 
 

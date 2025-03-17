@@ -53,24 +53,6 @@ def maybe_compile(model):
         return torch.compile(model)
 
 
-def change_resnet_classes(model, num_classes):
-    """ Replaces the final resnet layer with one that output the desired number of classes. """
-    in_features = model.fc.in_features
-    model.fc = torch.nn.Linear(in_features, num_classes)
-
-
-def change_resnet_input(model, input_channels):
-    old_conv : torch.nn.Conv2d = model.conv1
-    new_conv = torch.nn.Conv2d(in_channels  = input_channels,
-                               out_channels = old_conv.out_channels,
-                               kernel_size  = old_conv.kernel_size,
-                               stride       = old_conv.stride,
-                               padding      = old_conv.padding,
-                               bias         = old_conv.bias)
-    model.conv1 = new_conv
-    model.conv1.weight.data[:,:3,...] = old_conv.weight.data
-
-
 def read_img(input_file, dim_ordering="CHW", dtype='float32', band_mapping=None):
     """Reads an image from disk and returns it as numpy array.
 
@@ -109,40 +91,6 @@ def read_img(input_file, dim_ordering="CHW", dtype='float32', band_mapping=None)
         raise ValueError("Dim ordering {} not supported. Choose one of 'HWC' or 'CHW'.".format(dim_ordering))
 
     return arr
-
-
-def default_image_loader(path):
-    return read_img(path) / 255
-
-
-def get_all_image_paths(root_folder, image_extensions=("jpg", "jpeg", "png", "bmp", "gif", "tif")):
-    """ Returns a list of all complete file paths of all the images in the subfolders of the given root folder.
-
-    This function was written by ChatGPT.
-    """
-    image_paths = []  # List to store all the image file paths
-    for root, dirs, files in os.walk(os.path.abspath(root_folder)):
-        for file in files:
-            if file.lower().endswith(tuple(image_extensions)):
-                image_paths.append(os.path.join(root, file))
-    return image_paths
-
-
-def count_files_in_subfolders(directory):
-    result = {}
-    for root, dirs, files in os.walk(directory):
-        # Ignore the root directory itself
-        if root != directory:
-            result[root] = len(files)
-    return result
-
-
-class GeneratorDataset(IterableDataset):
-    def __init__(self, generator):
-        self.generator = generator
-
-    def __iter__(self):
-        return self.generator
 
 
 def xarray_trafo_to_gdal_trafo(xarray_trafo):
@@ -592,9 +540,6 @@ def load_model_from_configs_and_checkpoint(model_config_path, data_config_path, 
 
     return model, init_args
 
-# def load_model_from_config_and_checkpoint(config, checkpoint_path):
-
-
 
 def classname(obj):
     return obj.__class__.__name__
@@ -605,11 +550,6 @@ def copy_file_to_destination(destination_folder, file):
     if not os.path.exists(destination_folder):
         os.makedirs(destination_folder)
     shutil.copy(current_file_path, os.path.join(destination_folder, os.path.basename(current_file_path)))
-
-
-# def numpy_representer(dumper, data):
-#     """Convert numpy arrays to lists for YAML serialization."""
-#     return dumper.represent_list(data.tolist())
 
 
 def listify(d):
@@ -630,9 +570,6 @@ def save_dict_to_yaml(data, filename):
         data (dict): The dictionary to save.
         filename (str): The filename where the dictionary should be saved.
     """
-    # Register the numpy array representer to handle np.ndarray objects
-    # yaml.add_representer(np.ndarray, numpy_representer)
-
     with open(filename, 'w') as file:
         yaml.dump(listify(data), file, default_flow_style=False)
 

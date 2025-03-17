@@ -8,6 +8,7 @@ from torch.utils.data import Dataset
 from .datasets import InMemoryImageClassificationDataset, InMemoryTimeSeriesDataset, CLOUD_OR_NODATA
 from .datasets import MultiModalDataset
 import torchvision.transforms as T
+from .augmentations import augment_boa_and_time
 
 
 def filepath_to_classname(path):
@@ -95,7 +96,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                  val_where: str = "none",
                  append_ndvi: bool = False,
                  eliminate_nodata: bool = False,
-                 augmentation_strength: float = 0.02,
+                 # augmentation_strength: float = 0.02,
                  time_shift: int = 4,
                  pickle_path: str = "/tmp",
                  mean=np.zeros(10),
@@ -121,7 +122,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.val_where = val_where if val_where != "none" else where
         self.append_ndvi = append_ndvi
         self.eliminate_nodata = eliminate_nodata
-        self.augmentation_strength = augmentation_strength
+        # self.augmentation_strength = augmentation_strength
         self.time_shift = time_shift
         self.pickle_path = pickle_path
         self.mean = np.array(mean)
@@ -134,8 +135,8 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.train_ids = train_ids
         self.val_ids = val_ids
 
-    def train_augmentation(self, boa_observation):
-        return boa_observation * ((1 - self.augmentation_strength) + np.random.rand(self.satellite_input_channels) * 2 * self.augmentation_strength)
+    # def train_augmentation(self, boa_observation):
+    #     return boa_observation * ((1 - self.augmentation_strength) + np.random.rand(self.satellite_input_channels) * 2 * self.augmentation_strength)
 
     def setup(self, stage=None) -> None:
         if self.is_setup:
@@ -160,7 +161,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         t0 = time.time()
         self.training_data = InMemoryTimeSeriesDataset(self.input_filepath,
                                                        self.dbname,
-                                                       self.train_augmentation,
+                                                       augment_boa_and_time,
                                                        self.sequence_length,
                                                        self.satellite_input_channels,
                                                        self.quality_mask,
@@ -256,7 +257,6 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
     @property
     def loss_weights(self):
         if not self.is_setup:
-            self.prepare_data()
             self.setup("fit")
             self.is_setup = True
         return self.training_data.compute_class_weights()

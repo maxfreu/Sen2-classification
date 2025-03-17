@@ -152,7 +152,8 @@ class InMemoryTimeSeriesDataset(Dataset):
         Args:
             input_filepath: Path to the sqlite or parquet dataset file
             dbname: Name of the contained table if input file is sqlite
-            augmentation: Optional augmentation function that acts on a single BOA observation
+            augmentation: Optional augmentation function that acts on a single BOA observation.
+                Function signature must be augmentation(boas, times, doy_or_not, mean, stddev, **kwargs).
             sequence_length: The maximum sequence length
             satellite_input_channels: Number of satellite image channels
             quality_mask: Bit-encoded quality mask (see webpage of FORCE satellite processing toolbox)
@@ -192,6 +193,8 @@ class InMemoryTimeSeriesDataset(Dataset):
         self.return_year = return_year
         self.time_encoding = time_encoding
         self.time_shift = time_shift
+        self.mean = mean
+        self.stddev = stddev
         self.df = self.load_data(input_filepath, dbname, where, plot_ids)
         self.df = self.df[(self.df.qai & quality_mask) == 0]
 
@@ -200,7 +203,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         # inv_stddev = 1 / (stddev.astype(np.float32) + 1e-7)
         # self.df.boa = [(np.frombuffer(x, dtype=np.int16).astype(np.float32) - mean) * inv_stddev for x in self.df.boa]
         # convert the bytes to a numpy array
-        self.df.boa = self.convert_bytearrays_to_numpy(self.df.boa, mean, stddev, append_ndvi)
+        self.df.boa = self.convert_bytearrays_to_numpy(self.df.boa, append_ndvi)
 
         # throw out all values smaller -5000
         # would be faster to remove all this in the file itself...
@@ -240,10 +243,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         self.num_classes = len(self.classes)
 
     @staticmethod
-    def convert_bytearrays_to_numpy(bytearray_series, mean, stddev, append_ndvi):
-        mean = np.array(mean)
-        stddev = np.array(stddev)
-        inv_stddev = (1 / (stddev + 1e-7)).astype(np.float32)
+    def convert_bytearrays_to_numpy(bytearray_series, append_ndvi):
         concatenated_bytes = b''.join(bytearray_series.to_list())
         boa = np.frombuffer(concatenated_bytes, dtype=np.int16).astype(np.float32).reshape(len(bytearray_series), -1)
         if append_ndvi:
@@ -252,7 +252,6 @@ class InMemoryTimeSeriesDataset(Dataset):
             ndvi = (nir - red) / (nir + red + 1e-5)
             ndvi = np.clip(ndvi, -1, 1)
             boa = np.column_stack((boa, ndvi))
-        boa = (boa - mean) * inv_stddev
         return list(boa)
 
     def load_data(self, input_filepath, dbname, where, plot_ids):
@@ -373,24 +372,23 @@ class InMemoryTimeSeriesDataset(Dataset):
         n_obs = min(selection.shape[0], self.sequence_length)
 
         boa = np.zeros((self.sequence_length, self.satellite_input_channels), dtype=np.float32)
+        times = np.zeros(self.sequence_length, dtype=np.int32)
 
-        if self.augmentation is not None:
-            augmented_boas = [self.augmentation(obs) for obs in selection.boa[:n_obs]]
-            boa[:n_obs, :] = np.stack(augmented_boas)
-        else:
-            boa[:n_obs, :] = np.stack(selection.boa[:n_obs])
-
-        times = np.zeros(self.sequence_length, dtype=int)
-        time_offsets = np.random.randint(-self.time_shift, self.time_shift+1, n_obs)
+        boa_selection = np.stack(selection.boa[:n_obs])
 
         if self.time_encoding == "doy":
-            times[:n_obs] = selection.doy[:n_obs]
-            times[:n_obs] += time_offsets
-            np.clip(times, 0, 366, times)
+            time_selection = selection.doy[:n_obs]
         else:
-            times[:n_obs] = selection.dayssinceepoch[:n_obs]
-            times[:n_obs] += time_offsets
-            np.clip(times, 0, 12*366, times)
+            time_selection = selection.dayssinceepoch[:n_obs]
+
+        if self.augmentation is not None:
+            augmented_boa, augmented_times = self.augmentation(boa_selection, time_selection, self.time_encoding == "doy", self.mean, self.stddev)
+            n_obs = len(augmented_times)  # Update n_obs to match new augmented length
+            boa[:n_obs] = augmented_boa
+            times[:n_obs] = augmented_times
+        else:
+            boa[:n_obs] = boa_selection
+            times[:n_obs] = time_selection
 
         mask = np.zeros(self.sequence_length, dtype=bool)
         mask[n_obs:] = True
@@ -422,14 +420,6 @@ class InMemoryTimeSeriesDataset(Dataset):
         dataset.tree_ids = subset
         dataset.df = dataset.df[dataset.df["tree_id"].isin(subset)]
         dataset.grouped_df = dataset.df.groupby("tree_id")
-    
-    # @staticmethod
-    # def get_random_365_days(startdate, enddate):
-    #     dates_bet = enddate - startdate
-    #     total_days = dates_bet.days
-    #     random_day = np.random.choice(total_days)
-    #     res = startdate + datetime.timedelta(days=int(random_day))
-    #     return res, res + datetime.timedelta(days=365)
 
 
 class PretrainingDatasetTIF(IterableDataset):

@@ -37,7 +37,6 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                  val_where: str = "none",
                  append_ndvi: bool = False,
                  eliminate_nodata: bool = False,
-                 time_shift: int = 4,
                  pickle_path: str = "/tmp",
                  mean=np.zeros(10),
                  stddev=np.ones(10) * 10000,
@@ -62,7 +61,6 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.val_where = val_where if val_where != "none" else where
         self.append_ndvi = append_ndvi
         self.eliminate_nodata = eliminate_nodata
-        self.time_shift = time_shift
         self.pickle_path = pickle_path
         self.mean = np.array(mean)
         self.stddev = np.array(stddev)

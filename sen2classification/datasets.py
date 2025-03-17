@@ -56,7 +56,6 @@ class InMemoryTimeSeriesDataset(Dataset):
                  num_workers: int = 0,
                  where: str = "",
                  append_ndvi: bool = False,
-                 time_shift: int = 4,
                  eliminate_nodata: bool = False,
                  mean=np.zeros(10),
                  stddev=np.ones(10) * 10000,
@@ -90,7 +89,6 @@ class InMemoryTimeSeriesDataset(Dataset):
                 deciduous trees from pure stands.
             append_ndvi (bool): Whether to append the NDVI to the BOA values. If True, you have to increase the
                 number of satellite channels by one.
-            time_shift (int): The observation times will be randomly shifted by maximum +- time_shift days.
             eliminate_nodata: Whether to remove all records where the first BOA band has a value smaller than -5000.
             mean: Numpy vector representing the band-wise mean of the data. Is used for normalization.
             stddev: Numpy vector representing the band-wise standard deviation of the data. Is used for normalization.
@@ -106,7 +104,6 @@ class InMemoryTimeSeriesDataset(Dataset):
         self.return_mode = return_mode
         self.return_year = return_year
         self.time_encoding = time_encoding
-        self.time_shift = time_shift
         self.mean = mean
         self.stddev = stddev
         self.df = self.load_data(input_filepath, dbname, where, plot_ids)

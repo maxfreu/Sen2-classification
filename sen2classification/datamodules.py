@@ -3,7 +3,6 @@ import torch
 import random
 import numpy as np
 import pytorch_lightning as L
-from torch.utils.data import Dataset
 from .datasets import InMemoryTimeSeriesDataset, CLOUD_OR_NODATA
 from .augmentations import augment_boa_and_time
 
@@ -41,7 +40,8 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                  mean=np.zeros(10),
                  stddev=np.ones(10) * 10000,
                  train_ids=None,
-                 val_ids=None
+                 val_ids=None,
+                 augmentation_kwargs=None
                  ):
         super().__init__()
         self.input_filepath = input_file
@@ -71,6 +71,10 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.classes_ = None
         self.train_ids = train_ids
         self.val_ids = val_ids
+        self.augmentation_kwargs = augmentation_kwargs or {}
+
+    def train_augmentation(self, boa, time, doy, mean, stddev):
+        return augment_boa_and_time(boa, time, doy, mean, stddev, **self.augmentation_kwargs)
 
     def setup(self, stage=None) -> None:
         if self.is_setup:
@@ -95,7 +99,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         t0 = time.time()
         self.training_data = InMemoryTimeSeriesDataset(self.input_filepath,
                                                        self.dbname,
-                                                       augment_boa_and_time,
+                                                       self.train_augmentation,
                                                        self.sequence_length,
                                                        self.satellite_input_channels,
                                                        self.quality_mask,
@@ -104,7 +108,6 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                        time_encoding=self.time_encoding,
                                                        where=train_where,
                                                        append_ndvi=self.append_ndvi,
-                                                       time_shift=self.time_shift,
                                                        eliminate_nodata=self.eliminate_nodata,
                                                        plot_ids=self.train_ids,
                                                        mean=self.mean,

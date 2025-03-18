@@ -1,5 +1,6 @@
 import numpy as np
 
+
 # TODO:
 # 1) Prevent time jitter from switching two observation dates
 def augment_boa_and_time(
@@ -32,7 +33,6 @@ def augment_boa_and_time(
     Args:
         boa: Array of unnormalized BOA values with shape (max_seq_len, channels)
         time: Array of time values with shape (max_seq_len)
-        seq_len: The actual sequence length used (<=max_seq_len)
         doy_encoding: Whether time values are day-of-year encoded
         mean: Channel-wise mean values used for normalization.
         stddev: Channel-wise standard deviation values used for normalization.
@@ -78,7 +78,7 @@ def augment_boa_and_time(
     # Make copies to avoid modifying the originals
     boa_aug = boa.copy()
     time_aug = time.copy()
-    seq_len = len(times)
+    seq_len = len(time)
     new_seq_len = seq_len
 
     # ~~ Augmentations that work better on unnormalized data ~~ #
@@ -124,35 +124,35 @@ def augment_boa_and_time(
         # Apply gamma correction only to positive values
         # Use gamma_offset to control the range: 1.0 ± gamma_offset
         gamma = rng.uniform(1.0 - gamma_offset, 1.0 + gamma_offset)
-        pos_mask = boa_aug[:seq_len] > 0
-        boa_aug[:seq_len][pos_mask] = boa_aug[:seq_len][pos_mask] ** gamma
+        pos_mask = boa_aug > 0
+        boa_aug[pos_mask] = boa_aug[pos_mask] ** gamma
 
     # Normalize
     inv_stddev = 1 / (stddev + 1e-7)
-    boa_aug[:seq_len] = (boa_aug[:seq_len] - mean) * inv_stddev
+    boa_aug = (boa_aug - mean) * inv_stddev
 
     # ~~ Augmentations that work better on normalized data ~~ #
 
     # Apply random noise
     if rng.random() < p_random_noise:
-        noise = rng.normal(0, noise_scale, boa_aug[:seq_len].shape)
-        boa_aug[:seq_len] += noise
+        noise = rng.normal(0, noise_scale, boa_aug.shape)
+        boa_aug += noise
     
     # Apply random constant offsets (band-specific)
     if rng.random() < p_constant_offset:
         offsets = rng.uniform(-offset_scale, offset_scale, (1, boa_aug.shape[1]))
-        boa_aug[:seq_len] += offsets
+        boa_aug += offsets
     
     # Apply time jitter
     if rng.random() < p_time_jitter:
         jitter = rng.integers(-time_jitter_max, time_jitter_max + 1, seq_len)
-        time_aug[:seq_len] += jitter
+        time_aug += jitter
         if doy_encoding:
-            time_aug[:seq_len] = np.clip(time_aug[:seq_len], 0, 366)
+            time_aug = np.clip(time_aug, 0, 366)
         else:
-            time_aug[:seq_len] = np.clip(time_aug[:seq_len], 0, 10*366)
-        sort_indices = np.argsort(time_aug[:seq_len])
-        time_aug[:seq_len] = time_aug[sort_indices]
+            time_aug = np.clip(time_aug, 0, 10*366)
+        sort_indices = np.argsort(time_aug)
+        time_aug = time_aug[sort_indices]
         boa_aug[:seq_len, :] = boa_aug[sort_indices, :]
     
     # Apply time-dependent noise (noise that varies with time)
@@ -160,7 +160,7 @@ def augment_boa_and_time(
         # times are encoded as doy so between 0 and 366
         # Use actual time values (normalized to [0, 1]) for generating noise
         # First get the time values for the sequence
-        actual_times = time_aug[:seq_len].copy()
+        actual_times = time_aug.copy()
         
         # Normalize times to [0, 2π] for sinusoidal functions
         t_normalized = 2 * np.pi * actual_times / 366
@@ -178,26 +178,27 @@ def augment_boa_and_time(
         weights3 = rng.uniform(-time_noise_strength, time_noise_strength, 1)
 
         time_noise = f0 * weights0 + f1 * weights1 + f2 * weights2 + f3 * weights3
-        boa_aug[:seq_len] += time_noise[:, None]
+        boa_aug += time_noise[:, None]
 
     # Apply observation dropout (completely remove observations)
     if rng.random() < p_observation_dropout:
-        # Calculate number of observations to drop
-        num_dropout = max(1, int(seq_len * dropout_percentage))
-        # Randomly select observations to drop
-        dropout_indices = rng.choice(seq_len, num_dropout, replace=False)
-        
-        # Move all data after dropout positions forward
-        for idx in sorted(dropout_indices):
-            if idx < seq_len - 1:
-                # Shift all subsequent observations one position forward
-                boa_aug[idx:seq_len-1] = boa_aug[idx+1:seq_len]
-                time_aug[idx:seq_len-1] = time_aug[idx+1:seq_len]
-                
-            # Set the last positions to zeros or default values
-            boa_aug[seq_len-1] = 0
-            time_aug[seq_len-1] = 0
+        if seq_len > 12:
+            # Calculate number of observations to drop
+            num_dropout = max(1, int(seq_len * dropout_percentage))
+            # Randomly select observations to drop
+            dropout_indices = rng.choice(seq_len, num_dropout, replace=False)
 
-        new_seq_len = seq_len - num_dropout
+            # Move all data after dropout positions forward
+            for idx in sorted(dropout_indices):
+                if idx < seq_len - 1:
+                    # Shift all subsequent observations one position forward
+                    boa_aug[idx:seq_len-1] = boa_aug[idx+1:seq_len]
+                    time_aug[idx:seq_len-1] = time_aug[idx+1:seq_len]
+
+                # Set the last positions to zeros or default values
+                boa_aug[seq_len-1] = 0
+                time_aug[seq_len-1] = 0
+
+            new_seq_len = seq_len - num_dropout
 
     return boa_aug[:new_seq_len], time_aug[:new_seq_len]

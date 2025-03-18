@@ -105,7 +105,7 @@ class InMemoryTimeSeriesDataset(Dataset):
         self.return_year = return_year
         self.time_encoding = time_encoding
         self.mean = mean
-        self.stddev = stddev
+        self.stddev = stddev + 1e-7
         self.df = self.load_data(input_filepath, dbname, where, plot_ids)
         self.df = self.df[(self.df.qai & quality_mask) == 0]
 
@@ -288,9 +288,9 @@ class InMemoryTimeSeriesDataset(Dataset):
         boa_selection = np.stack(selection.boa[:n_obs])
 
         if self.time_encoding == "doy":
-            time_selection = selection.doy[:n_obs]
+            time_selection = selection.doy[:n_obs].to_numpy()
         else:
-            time_selection = selection.dayssinceepoch[:n_obs]
+            time_selection = selection.dayssinceepoch[:n_obs].to_numpy()
 
         if self.augmentation is not None:
             augmented_boa, augmented_times = self.augmentation(boa_selection, time_selection, self.time_encoding == "doy", self.mean, self.stddev)
@@ -298,7 +298,7 @@ class InMemoryTimeSeriesDataset(Dataset):
             boa[:n_obs] = augmented_boa
             times[:n_obs] = augmented_times
         else:
-            boa[:n_obs] = boa_selection
+            boa[:n_obs] = (boa_selection - self.mean) / self.stddev
             times[:n_obs] = time_selection
 
         mask = np.zeros(self.sequence_length, dtype=bool)

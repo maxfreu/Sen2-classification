@@ -3,17 +3,13 @@ import os
 import sys
 import argparse
 import tarfile
-import tempfile
-import concurrent.futures
 import shutil
-import time
 import multiprocessing
 import yaml
 import torch
 import numpy as np
 from datetime import date
-from pathlib import Path
-from typing import List, Optional, Callable, Tuple, Dict, Any
+from typing import List, Dict, Any
 
 from sen2classification import utils
 
@@ -279,6 +275,8 @@ def main():
                         help='Total number of parallel tasks/processes')
     parser.add_argument('--rank', dest='rank', type=int, default=0,
                         help='Current task/process ID (zero-based)')
+    parser.add_argument("--overwrite", help="If given, existing files will be overwritten.",
+                        action="store_true")
                         
     args = parser.parse_args()
     
@@ -324,12 +322,12 @@ def main():
         stddev = np.array(data_config["stddev"]).astype(np.float32)
     
     # Load model
-    print("Loading model from checkpoint...")
-    model, _ = utils.load_model_from_configs_and_checkpoint(args.config, args.config, args.checkpoint)
-    model.to("cuda")
-    model.eval()
-    model = torch.compile(model)
-    print("Model loaded successfully.")
+    # print("Loading model from checkpoint...")
+    # model, _ = utils.load_model_from_configs_and_checkpoint(args.config, args.config, args.checkpoint)
+    # model.to("cuda")
+    # model.eval()
+    # model = torch.compile(model)
+    # print("Model loaded successfully.")
     
     # Create output directory if it doesn't exist
     os.makedirs(args.output_folder, exist_ok=True)
@@ -345,7 +343,14 @@ def main():
     else:
         tar_files = all_tar_files
 
-    print(f"This task will process {len(tar_files)} files")
+    N = len(tar_files)
+
+    if not args.overwrite:
+        tarfilenames = [os.path.splitext(os.path.basename(f))[0] for f in tar_files]
+        output_filepaths = [os.path.join(tfn[:-5]) + ".tif" for tfn in tarfilenames]
+        tar_files = [tf for (tf, of) in zip(tar_files, output_filepaths) if not os.path.exists(of)]
+
+    print(f"This task will process {len(tar_files)} files. {N - len(tar_files)} files will be skipped.")
 
     # Prepare processing arguments
     processing_args = {

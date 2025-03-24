@@ -7,8 +7,7 @@ import tempfile
 import concurrent.futures
 import shutil
 import time
-import queue
-import threading
+import multiprocessing
 import yaml
 import torch
 import numpy as np
@@ -123,7 +122,7 @@ def cleanup(extracted_dir: str) -> None:
 
 
 def data_loader_worker(tar_paths: List[str], temp_dir: str, 
-                      data_queue: queue.Queue, halt_on_error: bool) -> None:
+                      data_queue: multiprocessing.Queue, halt_on_error: bool) -> None:
     """
     Worker function to load data from tar files and put the extracted paths into the queue.
     
@@ -153,20 +152,28 @@ def data_loader_worker(tar_paths: List[str], temp_dir: str,
     data_queue.put((None, None, None))
 
 
-def processor_worker(data_queue: queue.Queue, results: Dict[str, bool], 
-                    model, output_folder: str, processing_args: Dict[str, Any],
-                    halt_on_error: bool) -> None:
+def processor_worker(data_queue: multiprocessing.Queue, results_queue: multiprocessing.Queue, 
+                    checkpoint_path: str, config_path: str, output_folder: str, 
+                    processing_args: Dict[str, Any], halt_on_error: bool) -> None:
     """
     Worker function to process data from the queue.
     
     Args:
         data_queue: Queue containing extracted directory paths
-        results: Dictionary to store results
-        model: The PyTorch model for inference
+        results_queue: Queue to store processing results
+        checkpoint_path: Path to model checkpoint file
+        config_path: Path to configuration file
         output_folder: Folder to save the output
         processing_args: Additional arguments for processing
         halt_on_error: Whether to halt on error
     """
+    # Load model inside the process
+    model, _ = utils.load_model_from_configs_and_checkpoint(config_path, config_path, checkpoint_path)
+    model.to("cuda")
+    model.eval()
+    model = torch.compile(model)
+    print(f"Model loaded successfully in processor {multiprocessing.current_process().name}")
+    
     while True:
         tar_path, extracted_dir, error = data_queue.get()
         
@@ -178,26 +185,26 @@ def processor_worker(data_queue: queue.Queue, results: Dict[str, bool],
         
         # If there was an error during loading
         if extracted_dir is None:
-            results[tar_path] = False
+            results_queue.put((tar_path, False))
             if halt_on_error:
                 break
             continue
         
         try:
             # Process the data
-            process_data(extracted_dir, model, output_folder, processing_args)
-            results[tar_path] = True
+            success = process_data(extracted_dir, model, output_folder, processing_args)
+            results_queue.put((tar_path, success))
             
             # Clean up regardless of processing result
             cleanup(extracted_dir)
             
-            # if not success and halt_on_error:
-            #     break
+            if not success and halt_on_error:
+                break
                 
         except Exception as e:
             error_msg = f"Error processing {tar_path}: {str(e)}"
             print(error_msg)
-            results[tar_path] = False
+            results_queue.put((tar_path, False))
             
             # Attempt cleanup even if processing failed
             try:
@@ -335,10 +342,11 @@ def main():
     if args.world_size > 1:
         print(f"Running as distributed task {args.rank} of {args.world_size}")
         tar_files = get_slurm_task_files(all_tar_files, args.world_size, args.rank)
-        print(f"This task will process {len(tar_files)} files")
     else:
         tar_files = all_tar_files
-    
+
+    print(f"This task will process {len(tar_files)} files")
+
     # Prepare processing arguments
     processing_args = {
         'sequence_length': args.sequence_length,
@@ -355,16 +363,17 @@ def main():
         'append_ndvi': data_config.get("append_ndvi", False)
     }
     
-    # Create a bounded queue to communicate between loader and processor threads
-    data_queue = queue.Queue(maxsize=args.queue_size)
-    results = {}  # Dictionary to store processing results
+    # Create multiprocessing queues for communication between processes
+    multiprocessing.set_start_method('spawn', force=True)  # Use spawn for CUDA compatibility
+    data_queue = multiprocessing.Queue(maxsize=args.queue_size)
+    results_queue = multiprocessing.Queue()
     
-    # Divide tar files among loader threads
+    # Divide tar files among loader processes
     num_loaders = max(min(args.parallel_loaders, len(tar_files)), 1)
     files_per_loader = len(tar_files) // num_loaders if num_loaders > 0 else 0
     remainder = len(tar_files) % num_loaders if num_loaders > 0 else 0
     
-    loader_threads = []
+    loader_processes = []
     start_idx = 0
     
     for i in range(num_loaders):
@@ -373,33 +382,66 @@ def main():
         if i < remainder:
             end_idx += 1
         
-        # Create and start the loader thread
-        loader_thread = threading.Thread(
+        # Create and start the loader process
+        loader_process = multiprocessing.Process(
             target=data_loader_worker,
-            args=(tar_files[start_idx:end_idx], args.temp_dir, data_queue, not args.continue_on_error)
+            args=(tar_files[start_idx:end_idx], args.temp_dir, data_queue, not args.continue_on_error),
+            name=f"Loader-{i}"
         )
-        loader_thread.start()
-        loader_threads.append(loader_thread)
+        loader_process.start()
+        loader_processes.append(loader_process)
         
         start_idx = end_idx
     
-    # Create and start processor threads
-    processor_threads = []
-    for _ in range(args.parallel_processors):
-        processor_thread = threading.Thread(
+    # Create and start processor processes
+    processor_processes = []
+    for i in range(args.parallel_processors):
+        processor_process = multiprocessing.Process(
             target=processor_worker,
-            args=(data_queue, results, model, args.output_folder, processing_args, not args.continue_on_error)
+            args=(data_queue, results_queue, args.checkpoint, args.config, 
+                  args.output_folder, processing_args, not args.continue_on_error),
+            name=f"Processor-{i}"
         )
-        processor_thread.start()
-        processor_threads.append(processor_thread)
+        processor_process.start()
+        processor_processes.append(processor_process)
     
-    # Wait for loader threads to complete
-    for thread in loader_threads:
-        thread.join()
+    # Wait for loader processes to complete
+    for process in loader_processes:
+        process.join()
     
-    # Wait for processor threads to complete
-    for thread in processor_threads:
-        thread.join()
+    # Collect results while processors are still running
+    results = {}
+    completed_processors = 0
+    total_processors = args.parallel_processors
+    
+    while completed_processors < total_processors:
+        if not any(p.is_alive() for p in processor_processes):
+            # All processors have exited
+            break
+            
+        try:
+            # Get results with a timeout to periodically check if processes are still alive
+            tar_path, success = results_queue.get(timeout=0.1)
+            results[tar_path] = success
+        except:
+            # Queue.Empty or other exceptions
+            continue
+    
+    # Drain any remaining results from the queue
+    while not results_queue.empty():
+        try:
+            tar_path, success = results_queue.get(timeout=0.1)
+            results[tar_path] = success
+        except:
+            break
+    
+    # Make sure all processes have terminated
+    for process in processor_processes:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=2)
+            if process.is_alive():
+                print(f"Warning: Process {process.name} did not terminate cleanly")
     
     # Report results
     successes = sum(1 for success in results.values() if success)

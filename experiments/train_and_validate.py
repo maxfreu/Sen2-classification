@@ -60,7 +60,7 @@ def set_random_seeds(seed=1337):
 
 
 def train(model_config, data, logdir, experiment_name, version, model_extra_args={}, trainer_extra_args={},
-          experiment_file=""):
+          experiment_file="", overwrite=True):
     """Train a model with the given configuration and log details."""
     set_random_seeds()
 
@@ -74,6 +74,10 @@ def train(model_config, data, logdir, experiment_name, version, model_extra_args
     #     print(err)
 
     output_folder = os.path.join(logdir, model_name, version)
+
+    if os.path.exists(output_folder) and not overwrite:
+        raise RuntimeError(f"Overwriting previous runs is disabled and the output folder exists: {output_folder}")
+
     checkpoint_dir = os.path.join(output_folder, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -277,7 +281,7 @@ def validate(checkpoint_folder, val_ds, return_mode="single", val_years=(2018, 2
 
 def train_and_validate(model_config, data, dataconfig, logdir, experiment_name, version, model_extra_args={},
                        trainer_extra_args={}, experiment_file="", do_validation=True, val_return_mode="single",
-                       val_years=(2018, 2020, 2022)):
+                       val_years=(2018, 2020, 2022), overwrite=True):
     """Wrapper function to train and validate the model."""
     model, output_folder, _, _, init_args = train(
         model_config=model_config,
@@ -287,7 +291,8 @@ def train_and_validate(model_config, data, dataconfig, logdir, experiment_name, 
         version=version,
         model_extra_args=model_extra_args,
         trainer_extra_args=trainer_extra_args,
-        experiment_file=experiment_file
+        experiment_file=experiment_file,
+        overwrite=overwrite
     )
 
     save_classes(output_folder, data.classes)

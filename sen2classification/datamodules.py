@@ -72,9 +72,10 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.train_ids = train_ids
         self.val_ids = val_ids
         self.augmentation_kwargs = augmentation_kwargs or {}
+        self.rng = np.random.default_rng(42)
 
     def train_augmentation(self, boa, time, doy, mean, stddev):
-        return augment_boa_and_time(boa, time, doy, mean, stddev, **self.augmentation_kwargs)
+        return augment_boa_and_time(boa, time, doy, mean, stddev, rng=self.rng, **self.augmentation_kwargs)
 
     def setup(self, stage=None) -> None:
         if self.is_setup:

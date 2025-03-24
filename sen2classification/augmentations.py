@@ -1,8 +1,6 @@
 import numpy as np
 
 
-# TODO:
-# 1) Prevent time jitter from switching two observation dates
 def augment_boa_and_time(
     boa,
     time,

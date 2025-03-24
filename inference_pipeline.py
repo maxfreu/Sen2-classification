@@ -349,7 +349,7 @@ def main():
 
     if not args.overwrite:
         tarfilenames = [os.path.splitext(os.path.basename(f))[0] for f in tar_files]
-        output_filepaths = [os.path.join(tfn[:-5]) + ".tif" for tfn in tarfilenames]
+        output_filepaths = [os.path.join(args.output_folder, tfn[:-5]) + ".tif" for tfn in tarfilenames]
         tar_files = [tf for (tf, of) in zip(tar_files, output_filepaths) if not os.path.exists(of)]
 
     print(f"This task will process {len(tar_files)} files. {N - len(tar_files)} files will be skipped.")

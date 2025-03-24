@@ -75,6 +75,7 @@ def process_data(extracted_dir: str, model, output_folder: str, args: Dict[str, 
         stddev = args.get('stddev')
         time_encoding = args.get('time_encoding', 'doy')
         append_ndvi = args.get('append_ndvi', False)
+        batch_size = args.get('batch_size', 3000)
         
         # Call the model's predict method
         model.predict_force_folder(
@@ -86,7 +87,7 @@ def process_data(extracted_dir: str, model, output_folder: str, args: Dict[str, 
             time_encoding=time_encoding,
             mean=mean,
             stddev=stddev,
-            batch_size=2048,
+            batch_size=batch_size,
             apply_argmax=apply_argmax,
             num_classes=num_classes,
             band_reordering=(3,0,1,2,4,5,6,7,8,9,10,11,12,13),
@@ -277,6 +278,7 @@ def main():
                         help='Current task/process ID (zero-based)')
     parser.add_argument("--overwrite", help="If given, existing files will be overwritten.",
                         action="store_true")
+    parser.add_argument("--batch-size", dest='batch_size', type=int, default=3000)
                         
     args = parser.parse_args()
     
@@ -365,7 +367,8 @@ def main():
         'mean': mean,
         'stddev': stddev,
         'time_encoding': data_config.get("time_encoding", "doy"),
-        'append_ndvi': data_config.get("append_ndvi", False)
+        'append_ndvi': data_config.get("append_ndvi", False),
+        'batch_size': args.batch_size
     }
     
     # Create multiprocessing queues for communication between processes
@@ -464,6 +467,9 @@ def main():
         if not args.continue_on_error:
             sys.exit(1)
 
-
+#%%
 if __name__ == "__main__":
     main()
+
+#%%
+

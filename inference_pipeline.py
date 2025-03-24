@@ -354,6 +354,10 @@ def main():
 
     print(f"This task will process {len(tar_files)} files. {N - len(tar_files)} files will be skipped.")
 
+    if len(tar_files) == 0:
+        print("No files left to process. Exiting.")
+        return
+
     # Prepare processing arguments
     processing_args = {
         'sequence_length': args.sequence_length,

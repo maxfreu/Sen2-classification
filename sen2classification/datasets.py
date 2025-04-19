@@ -1,3 +1,7 @@
+# due to some bug in torch this has to be at the top
+from juliacall import Main as jl
+from juliacall import Pkg as jlpkg
+
 import os
 import torch
 import sqlite3
@@ -6,6 +10,11 @@ import datetime
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset, IterableDataset
+
+jlpkg.activate("../S2Dataset")
+jl.seval("using S2Dataset")
+jl.seval("using Random")
+
 
 # Force processing framework quality bits
 # quality filters can be created by chaining the different flags with bit-wise "or" (|)
@@ -331,3 +340,80 @@ class InMemoryTimeSeriesDataset(Dataset):
         dataset.tree_ids = subset
         dataset.df = dataset.df[dataset.df["tree_id"].isin(subset)]
         dataset.grouped_df = dataset.df.groupby("tree_id")
+
+
+class JLDS(IterableDataset):
+    def __init__(self,
+                 filepath,
+                 where_stmt,
+                 augmentation_kwargs,
+                 class_mapping,
+                 seed=42,
+                 sequence_length=64,
+                 satellite_input_channels=10,
+                 plot_ids=None,
+                 time_encoding="doy",
+                 mean=np.zeros(10),
+                 stddev=np.ones(10),
+                 batch_size=128,
+                 max_rows=0,
+                 ):
+        args = " ".join([f"{k}={v}," for (k,v) in augmentation_kwargs.items()])
+        jl.seval(f"""
+        function aug(boa, time, doy_encoding, data_mean, stddev) 
+            augment_boa_and_time(boa,
+                                 time,
+                                 doy_encoding,
+                                 data_mean,
+                                 stddev;
+                                 rng=Xoshiro({seed}),
+                                 {args})
+        end
+        """)
+        self.ds = jl.S2ParquetDataset(filepath,
+                                      where_stmt,
+                                      jl.aug,
+                                      class_mapping,
+                                      max_rows=max_rows,
+                                      plot_ids=plot_ids,
+                                      seed=seed,
+                                      sequence_length=sequence_length,
+                                      satellite_input_channels=satellite_input_channels,
+                                      time_encoding=time_encoding,
+                                      mean_val=mean,
+                                      stddev_val=stddev
+                                      )
+        self.batch_size = batch_size
+        self.state = None
+
+    def __getitem__(self, i):
+        return self.ds[i]
+
+    def __len__(self):
+        return len(self.ds)
+    
+    def __iter__(self):
+        jl.shuffle(self.ds)
+        self.state = None
+        self.generator = jl.iterate_batched(self.ds, self.batch_size)
+        return self
+    
+    def __next__(self):
+        if self.state is None:
+            res = jl.iterate(self.generator)
+        else:
+            res = jl.iterate(self.generator, self.state)
+
+        if res:
+            (tree_id, boa, times, mask, cls_), self.state = res
+            tree_id = np.array(tree_id)
+            boa     = np.array(boa).transpose((2,1,0))
+            times   = np.array(times).transpose((1,0))
+            mask    = np.array(mask).transpose((1,0))
+            cls_    = np.array(cls_)
+            return tree_id, boa, times, mask, cls_
+        else:
+            raise StopIteration
+                
+    def __repr__(self):
+        return repr(self.ds)

@@ -346,7 +346,8 @@ def main():
     output_folders = []
     for checkpoint_path in args.checkpoints:
         checkpoint_name = os.path.splitext(os.path.basename(checkpoint_path))[0]
-        model_output_folder = os.path.join(args.output_folder, f"model_{checkpoint_name}")
+        checkpoint_id = checkpoint_name.split("_")[-1]
+        model_output_folder = os.path.abspath(args.output_folder) + f"_{checkpoint_id}"
         os.makedirs(model_output_folder, exist_ok=True)
         output_folders.append(model_output_folder)
     

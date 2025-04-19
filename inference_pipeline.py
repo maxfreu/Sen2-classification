@@ -150,7 +150,7 @@ def data_loader_worker(tar_paths: List[str], temp_dir: str,
 
 
 def processor_worker(data_queue: multiprocessing.Queue, results_queue: multiprocessing.Queue, 
-                    checkpoint_path: str, config_path: str, output_folder: str, 
+                    checkpoint_paths: List[str], config_path: str, output_folders: List[str], 
                     processing_args: Dict[str, Any], halt_on_error: bool) -> None:
     """
     Worker function to process data from the queue.
@@ -158,18 +158,21 @@ def processor_worker(data_queue: multiprocessing.Queue, results_queue: multiproc
     Args:
         data_queue: Queue containing extracted directory paths
         results_queue: Queue to store processing results
-        checkpoint_path: Path to model checkpoint file
+        checkpoint_paths: List of paths to model checkpoint files
         config_path: Path to configuration file
-        output_folder: Folder to save the output
+        output_folders: List of folders to save the outputs (one per model)
         processing_args: Additional arguments for processing
         halt_on_error: Whether to halt on error
     """
-    # Load model inside the process
-    model, _ = utils.load_model_from_configs_and_checkpoint(config_path, config_path, checkpoint_path)
-    model.to("cuda")
-    model.eval()
-    model = torch.compile(model)
-    print(f"Model loaded successfully in processor {multiprocessing.current_process().name}")
+    # Load multiple models inside the process
+    models = []
+    for i, checkpoint_path in enumerate(checkpoint_paths):
+        model, _ = utils.load_model_from_configs_and_checkpoint(config_path, config_path, checkpoint_path)
+        model.to("cuda")
+        model.eval()
+        model = torch.compile(model)
+        models.append(model)
+        print(f"Model {i+1}/{len(checkpoint_paths)} loaded successfully in processor {multiprocessing.current_process().name}")
     
     while True:
         tar_path, extracted_dir, error = data_queue.get()
@@ -182,26 +185,36 @@ def processor_worker(data_queue: multiprocessing.Queue, results_queue: multiproc
         
         # If there was an error during loading
         if extracted_dir is None:
-            results_queue.put((tar_path, False))
+            # Report failure for all models
+            for _ in range(len(models)):
+                results_queue.put((tar_path, False))
             if halt_on_error:
                 break
             continue
         
         try:
-            # Process the data
-            success = process_data(extracted_dir, model, output_folder, processing_args)
-            results_queue.put((tar_path, success))
+            # Process the data with each model
+            successes = []
+            for i, model in enumerate(models):
+                success = process_data(extracted_dir, model, output_folders[i], processing_args)
+                successes.append(success)
+                results_queue.put((tar_path, success))
+                
+                if not success and halt_on_error:
+                    break
             
-            # Clean up regardless of processing result
+            # Clean up regardless of processing results
             cleanup(extracted_dir)
             
-            if not success and halt_on_error:
+            if not all(successes) and halt_on_error:
                 break
                 
         except Exception as e:
             error_msg = f"Error processing {tar_path}: {str(e)}"
             print(error_msg)
-            results_queue.put((tar_path, False))
+            # Report failure for all models
+            for _ in range(len(models)):
+                results_queue.put((tar_path, False))
             
             # Attempt cleanup even if processing failed
             try:
@@ -239,9 +252,9 @@ def main():
     parser.add_argument('--tar-files', '-i', dest='tar_files', nargs='+', type=str,
                         help='List of tar files to process')
     parser.add_argument('--output-folder', '-o', dest='output_folder', type=str,
-                        help='Output folder for results')
-    parser.add_argument('--checkpoint', dest='checkpoint', type=str,
-                        help='Path to model checkpoint file')
+                        help='Base output folder for results')
+    parser.add_argument('--checkpoints', dest='checkpoints', nargs='+', type=str,
+                        help='List of paths to model checkpoint files')
     parser.add_argument('--config', dest='config', type=str,
                         help='Path to configuration file')
     parser.add_argument('--qai', dest='qai', type=int, default=31,
@@ -295,9 +308,15 @@ def main():
         print("Error: No output folder specified.")
         sys.exit(1)
         
-    if not args.checkpoint or not os.path.exists(args.checkpoint):
-        print("Error: Valid checkpoint file must be specified.")
+    if not args.checkpoints:
+        print("Error: No checkpoint files specified.")
         sys.exit(1)
+    
+    # Verify that all checkpoint files exist
+    for checkpoint_path in args.checkpoints:
+        if not os.path.exists(checkpoint_path):
+            print(f"Error: Checkpoint file does not exist: {checkpoint_path}")
+            sys.exit(1)
         
     if not args.config or not os.path.exists(args.config):
         print("Error: Valid config file must be specified.")
@@ -323,20 +342,17 @@ def main():
         mean = np.array(data_config["mean"]).astype(np.float32)
         stddev = np.array(data_config["stddev"]).astype(np.float32)
     
-    # Load model
-    # print("Loading model from checkpoint...")
-    # model, _ = utils.load_model_from_configs_and_checkpoint(args.config, args.config, args.checkpoint)
-    # model.to("cuda")
-    # model.eval()
-    # model = torch.compile(model)
-    # print("Model loaded successfully.")
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(args.output_folder, exist_ok=True)
+    # Create output directories for each model
+    output_folders = []
+    for checkpoint_path in args.checkpoints:
+        checkpoint_name = os.path.splitext(os.path.basename(checkpoint_path))[0]
+        model_output_folder = os.path.join(args.output_folder, f"model_{checkpoint_name}")
+        os.makedirs(model_output_folder, exist_ok=True)
+        output_folders.append(model_output_folder)
     
     # Use the provided tar files directly
     all_tar_files = args.tar_files
-    print(f"Processing {len(all_tar_files)} tar files")
+    print(f"Processing {len(all_tar_files)} tar files using {len(args.checkpoints)} models")
     
     # Check if distributed processing is requested
     if args.world_size > 1:
@@ -348,9 +364,14 @@ def main():
     N = len(tar_files)
 
     if not args.overwrite:
-        tarfilenames = [os.path.splitext(os.path.basename(f))[0] for f in tar_files]
-        output_filepaths = [os.path.join(args.output_folder, tfn[:-5]) + ".tif" for tfn in tarfilenames]
-        tar_files = [tf for (tf, of) in zip(tar_files, output_filepaths) if not os.path.exists(of)]
+        # Skip files that already exist in ALL output folders
+        filtered_tar_files = []
+        for tar_file in tar_files:
+            tarfilename = os.path.splitext(os.path.basename(tar_file))[0]
+            output_filepaths = [os.path.join(folder, f"{tarfilename[:-5]}.tif") for folder in output_folders]
+            if not all(os.path.exists(path) for path in output_filepaths):
+                filtered_tar_files.append(tar_file)
+        tar_files = filtered_tar_files
 
     print(f"This task will process {len(tar_files)} files. {N - len(tar_files)} files will be skipped.")
 
@@ -405,13 +426,13 @@ def main():
         
         start_idx = end_idx
     
-    # Create and start processor processes
+    # Create and start processor processes with all checkpoints and output folders
     processor_processes = []
     for i in range(args.parallel_processors):
         processor_process = multiprocessing.Process(
             target=processor_worker,
-            args=(data_queue, results_queue, args.checkpoint, args.config, 
-                  args.output_folder, processing_args, not args.continue_on_error),
+            args=(data_queue, results_queue, args.checkpoints, args.config, 
+                  output_folders, processing_args, not args.continue_on_error),
             name=f"Processor-{i}"
         )
         processor_process.start()
@@ -422,11 +443,11 @@ def main():
         process.join()
     
     # Collect results while processors are still running
-    results = {}
-    completed_processors = 0
-    total_processors = args.parallel_processors
+    results = {checkpoint: {} for checkpoint in args.checkpoints}
+    expected_results = len(tar_files) * len(args.checkpoints)
+    result_count = 0
     
-    while completed_processors < total_processors:
+    while result_count < expected_results:
         if not any(p.is_alive() for p in processor_processes):
             # All processors have exited
             break
@@ -434,7 +455,12 @@ def main():
         try:
             # Get results with a timeout to periodically check if processes are still alive
             tar_path, success = results_queue.get(timeout=0.1)
-            results[tar_path] = success
+            # Results from multiple models for the same tar path are sent separately
+            # Store them in the results dictionary
+            checkpoint_idx = result_count % len(args.checkpoints)
+            checkpoint = args.checkpoints[checkpoint_idx]
+            results[checkpoint][tar_path] = success
+            result_count += 1
         except:
             # Queue.Empty or other exceptions
             continue
@@ -443,7 +469,11 @@ def main():
     while not results_queue.empty():
         try:
             tar_path, success = results_queue.get(timeout=0.1)
-            results[tar_path] = success
+            # Assign remaining results
+            for checkpoint in args.checkpoints:
+                if tar_path not in results[checkpoint]:
+                    results[checkpoint][tar_path] = success
+                    break
         except:
             break
     
@@ -455,17 +485,25 @@ def main():
             if process.is_alive():
                 print(f"Warning: Process {process.name} did not terminate cleanly")
     
-    # Report results
-    successes = sum(1 for success in results.values() if success)
-    failures = sum(1 for success in results.values() if not success)
-    print(f"Processing complete: {successes} succeeded, {failures} failed")
+    # Report results for each model
+    for checkpoint_idx, checkpoint in enumerate(args.checkpoints):
+        checkpoint_name = os.path.basename(checkpoint)
+        model_results = results.get(checkpoint, {})
+        successes = sum(1 for success in model_results.values() if success)
+        failures = sum(1 for success in model_results.values() if not success)
+        print(f"Model {checkpoint_idx+1} ({checkpoint_name}): {successes} succeeded, {failures} failed")
     
     # List failed files if any
-    if failures > 0:
+    total_failures = sum(1 for checkpoint in args.checkpoints 
+                         for success in results.get(checkpoint, {}).values() if not success)
+    if total_failures > 0:
         print("Failed files:")
-        for tar_path, success in results.items():
-            if not success:
-                print(f"  {tar_path}")
+        for checkpoint in args.checkpoints:
+            checkpoint_name = os.path.basename(checkpoint)
+            model_results = results.get(checkpoint, {})
+            for tar_path, success in model_results.items():
+                if not success:
+                    print(f"  {tar_path} (model: {checkpoint_name})")
         
         # Return non-zero exit code if there were failures
         if not args.continue_on_error:

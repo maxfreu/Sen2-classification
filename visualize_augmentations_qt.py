@@ -9,7 +9,7 @@ import sys
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QSlider, QLabel, QGroupBox, QGridLayout,
                             QPushButton, QComboBox, QLineEdit, QPushButton, QMessageBox,
-                            QCheckBox, QSizePolicy)
+                            QCheckBox, QSizePolicy, QScrollArea)
 from PyQt5.QtCore import Qt
 
 from sen2classification.datasets import InMemoryTimeSeriesDataset
@@ -209,60 +209,72 @@ class AugmentationVisualizer(QMainWindow):
         canvas_size_policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.canvas.setSizePolicy(canvas_size_policy)
         
-        # Create sliders in one column
-        # Noise Parameters group
-        noise_group = QGroupBox("Noise Parameters")
-        noise_layout = QVBoxLayout()
+        # Create a scrollable area for all sliders
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_area.setWidget(scroll_content)
+        
+        # Probability Parameters group
+        prob_group = QGroupBox("Probability Parameters")
+        prob_layout = QVBoxLayout()
         
         self.p_random_noise = LabeledSlider("Random Noise Probability", 0, 1, 0.5, 0.1, 1)
-        self.noise_scale = LabeledSlider("Noise Scale", 0, 0.1, 0.02, 0.01, 2)
-        self.p_time_jitter = LabeledSlider("Time Jitter Probability", 0, 1, 0.5, 0.1, 1)
-        self.time_jitter_max = LabeledSlider("Max Time Jitter (days)", 0, 10, 4, 1, 0)
-        self.p_gamma = LabeledSlider("Gamma Probability", 0, 1, 0.8, 0.1, 1)
-        self.gamma_offset = LabeledSlider("Gamma Offset", 0, 0.01, 0.002, 0.001, 3)
-        
-        noise_layout.addWidget(self.p_random_noise)
-        noise_layout.addWidget(self.noise_scale)
-        noise_layout.addWidget(self.p_time_jitter)
-        noise_layout.addWidget(self.time_jitter_max)
-        noise_layout.addWidget(self.p_gamma)
-        noise_layout.addWidget(self.gamma_offset)
-        noise_group.setLayout(noise_layout)
-        
-        # Additional Parameters group
-        additional_group = QGroupBox("Additional Parameters")
-        additional_layout = QVBoxLayout()
-        
         self.p_constant_offset = LabeledSlider("Constant Offset Probability", 0, 1, 0.8, 0.1, 1)
-        self.offset_scale = LabeledSlider("Offset Scale", 0, 0.1, 0.04, 0.01, 2)
+        self.p_time_jitter = LabeledSlider("Time Jitter Probability", 0, 1, 0.5, 0.1, 1)
+        self.p_time_dependent_noise = LabeledSlider("Time-Dependent Noise Probability", 0, 1, 0.8, 0.1, 1)
+        self.p_blackout = LabeledSlider("Blackout Probability", 0, 1, 0.02, 0.1, 1)
+        self.p_gamma = LabeledSlider("Gamma Probability", 0, 1, 0.8, 0.1, 1)
         self.p_cloud_simulation = LabeledSlider("Cloud Simulation Probability", 0, 1, 0.02, 0.1, 1)
         self.p_cloud_shadow = LabeledSlider("Cloud Shadow Probability", 0, 1, 0.02, 0.1, 1)
-        self.p_blackout = LabeledSlider("Blackout Probability", 0, 1, 0.02, 0.1, 1)
-        self.p_time_dependent_noise = LabeledSlider("Time-Dependent Noise Probability", 0, 1, 0.8, 0.1, 1)
+        self.p_observation_dropout = LabeledSlider("Observation Dropout Probability", 0, 1, 1, 0.1, 1)
+        self.p_vegetation_period_modify = LabeledSlider("Vegetation Period Mod. Probability", 0, 1, 0.5, 0.1, 1)
+        
+        prob_layout.addWidget(self.p_random_noise)
+        prob_layout.addWidget(self.p_constant_offset)
+        prob_layout.addWidget(self.p_time_jitter)
+        prob_layout.addWidget(self.p_time_dependent_noise)
+        prob_layout.addWidget(self.p_blackout)
+        prob_layout.addWidget(self.p_gamma)
+        prob_layout.addWidget(self.p_cloud_simulation)
+        prob_layout.addWidget(self.p_cloud_shadow)
+        prob_layout.addWidget(self.p_observation_dropout)
+        prob_layout.addWidget(self.p_vegetation_period_modify)
+        prob_group.setLayout(prob_layout)
+        
+        # Strength Parameters group
+        strength_group = QGroupBox("Strength Parameters")
+        strength_layout = QVBoxLayout()
+        
+        self.noise_scale = LabeledSlider("Noise Scale", 0, 0.1, 0.02, 0.01, 2)
+        self.offset_scale = LabeledSlider("Offset Scale", 0, 0.1, 0.02, 0.01, 2)
+        self.time_jitter_max = LabeledSlider("Max Time Jitter (days)", 0, 10, 4, 1, 0)
         self.time_noise_strength = LabeledSlider("Time Noise Strength", 0, 0.2, 0.02, 0.01, 2)
-        self.p_observation_dropout = LabeledSlider("Observation Dropout Probability", 0, 1, 0.2, 0.1, 1)
+        self.gamma_offset = LabeledSlider("Gamma Offset", 0, 0.02, 0.02, 0.001, 3)
+        self.veg_period_max_delta = LabeledSlider("Max Veg Period Delta", 0, 30, 7, 1, 0)
         
-        additional_layout.addWidget(self.p_constant_offset)
-        additional_layout.addWidget(self.offset_scale)
-        additional_layout.addWidget(self.p_cloud_simulation)
-        additional_layout.addWidget(self.p_cloud_shadow)
-        additional_layout.addWidget(self.p_blackout)
-        additional_layout.addWidget(self.p_time_dependent_noise)
-        additional_layout.addWidget(self.time_noise_strength)
-        additional_layout.addWidget(self.p_observation_dropout)
-        additional_group.setLayout(additional_layout)
+        strength_layout.addWidget(self.noise_scale)
+        strength_layout.addWidget(self.offset_scale)
+        strength_layout.addWidget(self.time_jitter_max)
+        strength_layout.addWidget(self.gamma_offset)
+        strength_layout.addWidget(self.time_noise_strength)
+        strength_layout.addWidget(self.veg_period_max_delta)
+        strength_group.setLayout(strength_layout)
         
-        # Add groups to left panel
-        left_layout.addWidget(noise_group)
-        left_layout.addWidget(additional_group)
+        # Add groups to scroll area
+        scroll_layout.addWidget(prob_group)
+        scroll_layout.addWidget(strength_group)
+        scroll_layout.addStretch(1)  # Add stretch to prevent unnecessary expansion
         
-        # Add regenerate button
+        # Add scroll area to left panel
+        left_layout.addWidget(scroll_area)
+        
+        # Add regenerate button outside the scroll area
         self.regenerate_button = QPushButton("Regenerate with New Random Numbers")
         self.regenerate_button.setMinimumHeight(40)  # Make button taller
         self.regenerate_button.clicked.connect(self.regenerate_plot)
         left_layout.addWidget(self.regenerate_button)
-        
-        left_layout.addStretch(1)  # Add stretch to push widgets to the top
         
         # Connect sliders to update function
         self.connect_sliders()
@@ -322,7 +334,8 @@ class AugmentationVisualizer(QMainWindow):
             self.p_random_noise, self.noise_scale, self.p_time_jitter, 
             self.time_jitter_max, self.p_gamma, self.gamma_offset, self.p_constant_offset, 
             self.offset_scale, self.p_cloud_simulation, self.p_cloud_shadow, self.p_blackout, 
-            self.p_time_dependent_noise, self.time_noise_strength, self.p_observation_dropout
+            self.p_time_dependent_noise, self.time_noise_strength, self.p_observation_dropout,
+            self.p_vegetation_period_modify, self.veg_period_max_delta
         ]:
             slider.slider.valueChanged.connect(self.update_plot)
     
@@ -348,6 +361,8 @@ class AugmentationVisualizer(QMainWindow):
         p_time_dependent_noise = self.p_time_dependent_noise.value()
         time_noise_strength = self.time_noise_strength.value()
         p_observation_dropout = self.p_observation_dropout.value()
+        p_vegetation_period_modify = self.p_vegetation_period_modify.value()
+        veg_period_max_delta = int(self.veg_period_max_delta.value())
         
         # Use the class-level random number generator
         # This allows regenerating plots with new randomness while keeping the same parameters
@@ -371,6 +386,10 @@ class AugmentationVisualizer(QMainWindow):
             p_time_dependent_noise=p_time_dependent_noise,
             time_noise_strength=time_noise_strength,
             p_observation_dropout=p_observation_dropout,
+            p_vegetation_period_modify=p_vegetation_period_modify,
+            veg_period_max_delta=veg_period_max_delta,
+            blackout_percentage=0.02,
+            dropout_percentage=0.2,
             rng=self.rng
         )
         

@@ -7,7 +7,7 @@ data:
   sequence_length: 64
   satellite_input_channels: 10
   return_mode: "single"
-  time_encoding: "absolute"
+  time_encoding: "doy"
   where: ""
   quality_mask: 31
   class_mapping:

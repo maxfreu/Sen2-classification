@@ -18,7 +18,7 @@ from .validation.validation_exploratories import validate_exploratories
 from .validation.val_utils import checkpoint_folder_to_configfile, instantiate_model_from_checkpoint_folder_and_classname
 
 
-def load_data(dataconfigfile = "/home/max/dr/Sen2-classification/configs/14_classes.yaml", overwrite_args=None):
+def load_data(dataconfigfile = "/home/max/dr/Sen2-classification/configs/14_classes.yaml", overwrite_args=None, setup=False):
     if overwrite_args is None:
         overwrite_args = {}
 
@@ -32,7 +32,8 @@ def load_data(dataconfigfile = "/home/max/dr/Sen2-classification/configs/14_clas
         dataconfig["input_file"] = "/home/max/dr/extract_sentinel_pixels/datasets/S2GNFI_V1.parquet"
 
     data = TimeSeriesClassificationDataModule(**dataconfig)
-    data.setup()
+    if setup:
+        data.setup()
     return data, dataconfig
 
 
@@ -91,8 +92,9 @@ def train(model_config, data, logdir, experiment_name, version, model_extra_args
 
     trainer_args = {
         "max_steps": 100000,
-        "log_every_n_steps": 400,
-        "precision": "16-mixed"}
+        "log_every_n_steps": 1000,
+        "precision": "16-mixed",
+        }
 
     trainer_args = trainer_args | trainer_extra_args
 

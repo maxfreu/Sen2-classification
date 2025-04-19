@@ -15,14 +15,16 @@ def augment_boa_and_time(
     p_gamma=0.8,
     p_cloud_simulation=0.02,
     p_cloud_shadow=0.02,
-    p_observation_dropout=0.2,
+    p_observation_dropout=1,
+    p_vegetation_period_modify=0.5,
     noise_scale=0.02,
-    offset_scale=0.04,
-    time_jitter_max=4,
+    offset_scale=0.02,
+    time_jitter_max=14,
     blackout_percentage=0.02,
-    dropout_percentage=0.05,
+    dropout_percentage=0.2,
     time_noise_strength=0.02,
     gamma_offset=0.002,
+    veg_period_max_delta=10,
     rng=None
 ):
     """
@@ -43,13 +45,15 @@ def augment_boa_and_time(
         p_cloud_simulation: Probability of applying cloud simulation (default: 0.02)
         p_cloud_shadow: Probability of simulating cloud shadow (default: 0.02)
         p_observation_dropout: Probability of applying observation dropout (default: 0.2)
+        p_vegetation_period_modify: Probability of modifying vegetation period (default: 0.3)
         noise_scale: Scale of random noise (default: 0.02)
-        offset_scale: Scale of band-wise offsets (default: 0.04)
+        offset_scale: Scale of band-wise offsets (default: 0.02)
         time_jitter_max: Maximum time jitter in days (default: 4)
         blackout_percentage: Percentage of time steps to black out (default: 0.02)
         dropout_percentage: Percentage of observations to drop (default: 0.05)
         time_noise_strength: Strength factor for time-dependent noise (default: 0.02)
         gamma_offset: Maximum deviation from neutral gamma (1.0). Gamma will be in range [1-offset, 1+offset] (default: 0.002)
+        veg_period_max_delta: Maximum days of displacement in time warping (default: 7)
         rng: Random number generator. If None, a new one will be created.
     
     Augmentation Order:
@@ -62,6 +66,7 @@ def augment_boa_and_time(
         After normalization:
         - Random noise
         - Constant band-wise offsets
+        - Vegetation period modification (optional)
         - Time jitter
         - Time-dependent noise
         - Observation dropout
@@ -140,6 +145,26 @@ def augment_boa_and_time(
     if rng.random() < p_constant_offset:
         offsets = rng.uniform(-offset_scale, offset_scale, (1, boa_aug.shape[1]))
         boa_aug += offsets
+    
+    if rng.random() < p_vegetation_period_modify and doy_encoding and seq_len > 5:
+        # Define vegetation period (roughly spring and summer in Northern Hemisphere)
+        # Typically days 80-270 (late March to late September)
+        veg_start = 80
+        veg_end = 270
+        veg_center = (veg_start + veg_end) // 2
+
+        warping_field = rng.uniform(-veg_period_max_delta, veg_period_max_delta + 1) * np.sin(2*np.pi/366 * (time_aug - veg_center))
+        
+        # Apply combined warping field to time values
+        time_aug += warping_field.astype(np.int32)
+        
+        # Ensure times remain in valid range
+        time_aug = np.clip(time_aug, 1, 366)
+        
+        # Re-sort to maintain chronological order
+        sort_indices = np.argsort(time_aug)
+        time_aug = time_aug[sort_indices]
+        boa_aug = boa_aug[sort_indices]
     
     # Apply time jitter
     if rng.random() < p_time_jitter:

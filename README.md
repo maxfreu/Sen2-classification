@@ -2,6 +2,8 @@
 
 This repository accompanies our (yet to be published) paper [here](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=5705254). What the code here basically does, is to train a GRU on [this dataset](https://www.openagrar.de/receive/openagrar_mods_00094435) (description [here](https://essd.copernicus.org/articles/17/351/2025/essd-17-351-2025.html)). The resulting maps and additional data can be found [here](https://data.goettingen-research-online.de/dataverse/tsmg).
 
+![](https://github.com/maxfreu/Sen2-classification/blob/main/final_map_2022.svg)
+
 ## Training your own model on the dataset
 
 The published models come from the output of `experiments/final_crossvalidation.py`. But if you want to train your own models, you can probably do that easiest by using `main_CLI.py` and combining the different config files for the data and model.

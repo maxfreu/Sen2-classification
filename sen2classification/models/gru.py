@@ -79,7 +79,7 @@ class GRU(SatelliteClassifier):
         z = nn.utils.rnn.pack_padded_sequence(z, torch.sum(torch.logical_not(mask), 1).cpu(), batch_first=True, enforce_sorted=False)
         z, h = self.gru(z)
         z, mask_lens = nn.utils.rnn.pad_packed_sequence(z, batch_first=True, total_length=mask.shape[1])
-        z = z[torch.arange(len(mask_lens)), mask_lens-1]
+        z = z[0:len(mask_lens), mask_lens-1]
         z = self.dropout(z)
         z = self.fc1(z)
         z = relu(z)
@@ -219,4 +219,7 @@ class TimeSeriesModel(L.LightningModule):
                     "interval": "epoch",
                     }
                 }
+
+
+#%%
 

@@ -8,8 +8,8 @@ The published models come from the output of `experiments/final_crossvalidation.
 
 `python main_CLI.py --config configs/gru.yaml --config configs/13_classes.yaml --config configs/statistics_223_g-5k.yaml`
 
-I haven't touched the code in a while, so don't hesitate to raise issues when you encounter them.
-
 ## Inference
 
-The inference for the published maps has been run on a HPC using slurm and the `inference_pipeline.py` script, submitted via `inference_germany_pipeline.sh`. It assumes that there are four GPUs per node. It basically works through the tiles in a FORCE datacube in an embarassingly parallel manner; each GPU processes a folder. The core inference logic is implemented in `sen2classification/models/satellite_classifier.py - 'predict_force_folder'`.
+The inference for the published maps has been run on a HPC using slurm and the `inference_pipeline.py` script, submitted via `inference_germany_pipeline.sh`. It assumes that there are four GPUs per node. It basically works through the tiles in a FORCE datacube in an embarassingly parallel manner; each GPU processes a folder. The core inference logic is implemented in `sen2classification/models/satellite_classifier.py - 'predict_force_folder'`. For individiual processing it's probably easier to use the provided `inference.py`.
+
+I haven't touched the code in a while, so don't hesitate to raise issues when you encounter them.

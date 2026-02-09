@@ -220,6 +220,3 @@ class TimeSeriesModel(L.LightningModule):
                     }
                 }
 
-
-#%%
-

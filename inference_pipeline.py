@@ -4,12 +4,13 @@ import sys
 import argparse
 import tarfile
 import shutil
+import subprocess
 import multiprocessing
 import yaml
 import torch
 import numpy as np
 from datetime import date
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from sen2classification import utils
 
@@ -118,32 +119,61 @@ def cleanup(extracted_dir: str) -> None:
         shutil.rmtree(extracted_dir)
 
 
-def data_loader_worker(tar_paths: List[str], temp_dir: str, 
-                      data_queue: multiprocessing.Queue, halt_on_error: bool) -> None:
+def load_data_s3(s3_prefix: str, tile_name: str, temp_dir: str) -> str:
     """
-    Worker function to load data from tar files and put the extracted paths into the queue.
+    Download a tile folder from S3 to a temporary directory using rclone.
     
     Args:
-        tar_paths: List of tar file paths to process
+        s3_prefix: S3 prefix, e.g. 's3-force:forst-sentinel2/force/L2/ard'
+        tile_name: Tile folder name, e.g. 'X0072_Y0049'
+        temp_dir: Path to the temporary directory
+        
+    Returns:
+        Path to the downloaded directory
+    """
+    s3_path = f"{s3_prefix}/{tile_name}/"
+    local_dir = os.path.join(temp_dir, tile_name)
+    os.makedirs(local_dir, exist_ok=True)
+    
+    print(f"Downloading {s3_path} to {local_dir}")
+    result = subprocess.run(
+        ["rclone", "copy", s3_path, local_dir, "--transfers=8"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"rclone copy failed: {result.stderr}")
+    
+    return local_dir
+
+
+def data_loader_worker(items: List[str], temp_dir: str, 
+                      data_queue: multiprocessing.Queue, halt_on_error: bool,
+                      s3_prefix: Optional[str] = None) -> None:
+    """
+    Worker function to load data (from tar files or S3) and put the extracted paths into the queue.
+    
+    Args:
+        items: List of tar file paths or tile names to process
         temp_dir: Temporary directory for extraction
         data_queue: Queue to put extracted directory paths
         halt_on_error: Whether to halt on error
+        s3_prefix: If set, items are tile names to download from this S3 prefix
     """
-    for tar_path in tar_paths:
+    for item in items:
         try:
-            extracted_dir = load_data(tar_path, temp_dir)
-            # Put both the extracted directory and the source tar path in the queue
-            data_queue.put((tar_path, extracted_dir, None))
+            if s3_prefix:
+                extracted_dir = load_data_s3(s3_prefix, item, temp_dir)
+            else:
+                extracted_dir = load_data(item, temp_dir)
+            data_queue.put((item, extracted_dir, None))
         except Exception as e:
-            error_msg = f"Error loading data from {tar_path}: {str(e)}"
+            error_msg = f"Error loading data from {item}: {str(e)}"
             print(error_msg)
             if halt_on_error:
-                # Signal error to processing workers
-                data_queue.put((tar_path, None, error_msg))
+                data_queue.put((item, None, error_msg))
                 break
             else:
-                # Continue with other files but mark this one as failed
-                data_queue.put((tar_path, None, error_msg))
+                data_queue.put((item, None, error_msg))
     
     # Signal that all data has been loaded
     data_queue.put((None, None, None))
@@ -251,6 +281,10 @@ def main():
     parser = argparse.ArgumentParser(description='Process satellite image tiles in parallel.')
     parser.add_argument('--tar-files', '-i', dest='tar_files', nargs='+', type=str,
                         help='List of tar files to process')
+    parser.add_argument('--s3-prefix', dest='s3_prefix', type=str, default=None,
+                        help='S3 rclone prefix for tile folders, e.g. s3-force:forst-sentinel2/force/L2/ard')
+    parser.add_argument('--tiles', dest='tiles', nargs='+', type=str,
+                        help='List of tile names to download from S3 (used with --s3-prefix)')
     parser.add_argument('--output-folder', '-o', dest='output_folder', type=str,
                         help='Base output folder for results')
     parser.add_argument('--checkpoints', dest='checkpoints', nargs='+', type=str,
@@ -300,9 +334,16 @@ def main():
         print("Error: The argument --num-classes must be specified and greater than 0 when --soft is given.")
         sys.exit(1)
         
-    if not args.tar_files:
-        print("Error: No tar files specified.")
-        sys.exit(1)
+    # Determine mode: tar files or S3 tiles
+    s3_mode = args.s3_prefix is not None
+    if s3_mode:
+        if not args.tiles:
+            print("Error: --tiles must be specified when using --s3-prefix.")
+            sys.exit(1)
+    else:
+        if not args.tar_files:
+            print("Error: No tar files specified. Use --tar-files or --s3-prefix with --tiles.")
+            sys.exit(1)
         
     if not args.output_folder:
         print("Error: No output folder specified.")
@@ -322,13 +363,14 @@ def main():
         print("Error: Valid config file must be specified.")
         sys.exit(1)
         
-    # Verify that all tar files exist
-    for tar_file in args.tar_files:
-        if not os.path.exists(tar_file):
-            print(f"Error: Tar file does not exist: {tar_file}")
-            sys.exit(1)
-        if not tar_file.endswith('.tar'):
-            print(f"Warning: File may not be a tar archive: {tar_file}")
+    # Verify that all tar files exist (only in tar mode)
+    if not s3_mode:
+        for tar_file in args.tar_files:
+            if not os.path.exists(tar_file):
+                print(f"Error: Tar file does not exist: {tar_file}")
+                sys.exit(1)
+            if not tar_file.endswith('.tar'):
+                print(f"Warning: File may not be a tar archive: {tar_file}")
     
     # Parse date ranges
     tmin_data = date(*[int(x) for x in args.tmin_data.split("-")])
@@ -351,32 +393,40 @@ def main():
         os.makedirs(model_output_folder, exist_ok=True)
         output_folders.append(model_output_folder)
     
-    # Use the provided tar files directly
-    all_tar_files = args.tar_files
-    print(f"Processing {len(all_tar_files)} tar files using {len(args.checkpoints)} models")
+    # Build the list of items to process (tar paths or tile names)
+    if s3_mode:
+        all_items = args.tiles
+        print(f"Processing {len(all_items)} S3 tiles using {len(args.checkpoints)} models")
+    else:
+        all_items = args.tar_files
+        print(f"Processing {len(all_items)} tar files using {len(args.checkpoints)} models")
     
     # Check if distributed processing is requested
     if args.world_size > 1:
         print(f"Running as distributed task {args.rank} of {args.world_size}")
-        tar_files = get_slurm_task_files(all_tar_files, args.world_size, args.rank)
+        items = get_slurm_task_files(all_items, args.world_size, args.rank)
     else:
-        tar_files = all_tar_files
+        items = all_items
 
-    N = len(tar_files)
+    N = len(items)
 
     if not args.overwrite:
         # Skip files that already exist in ALL output folders
-        filtered_tar_files = []
-        for tar_file in tar_files:
-            tarfilename = os.path.splitext(os.path.basename(tar_file))[0]
-            output_filepaths = [os.path.join(folder, f"{tarfilename[:-5]}.tif") for folder in output_folders]
+        filtered_items = []
+        for item in items:
+            if s3_mode:
+                tile_name = item  # tile name directly
+            else:
+                tarfilename = os.path.splitext(os.path.basename(item))[0]
+                tile_name = tarfilename[:-5]  # strip _YEAR suffix
+            output_filepaths = [os.path.join(folder, f"{tile_name}.tif") for folder in output_folders]
             if not all(os.path.exists(path) for path in output_filepaths):
-                filtered_tar_files.append(tar_file)
-        tar_files = filtered_tar_files
+                filtered_items.append(item)
+        items = filtered_items
 
-    print(f"This task will process {len(tar_files)} files. {N - len(tar_files)} files will be skipped.")
+    print(f"This task will process {len(items)} files. {N - len(items)} files will be skipped.")
 
-    if len(tar_files) == 0:
+    if len(items) == 0:
         print("No files left to process. Exiting.")
         return
 
@@ -402,16 +452,16 @@ def main():
     data_queue = multiprocessing.Queue(maxsize=args.queue_size)
     results_queue = multiprocessing.Queue()
     
-    # Divide tar files among loader processes
-    num_loaders = max(min(args.parallel_loaders, len(tar_files)), 1)
-    files_per_loader = len(tar_files) // num_loaders if num_loaders > 0 else 0
-    remainder = len(tar_files) % num_loaders if num_loaders > 0 else 0
+    # Divide items among loader processes
+    num_loaders = max(min(args.parallel_loaders, len(items)), 1)
+    files_per_loader = len(items) // num_loaders if num_loaders > 0 else 0
+    remainder = len(items) % num_loaders if num_loaders > 0 else 0
     
     loader_processes = []
     start_idx = 0
     
     for i in range(num_loaders):
-        # Calculate the slice of tar files for this loader
+        # Calculate the slice of items for this loader
         end_idx = start_idx + files_per_loader
         if i < remainder:
             end_idx += 1
@@ -419,7 +469,8 @@ def main():
         # Create and start the loader process
         loader_process = multiprocessing.Process(
             target=data_loader_worker,
-            args=(tar_files[start_idx:end_idx], args.temp_dir, data_queue, not args.continue_on_error),
+            args=(items[start_idx:end_idx], args.temp_dir, data_queue, not args.continue_on_error),
+            kwargs={'s3_prefix': args.s3_prefix if s3_mode else None},
             name=f"Loader-{i}"
         )
         loader_process.start()
@@ -445,7 +496,7 @@ def main():
     
     # Collect results while processors are still running
     results = {checkpoint: {} for checkpoint in args.checkpoints}
-    expected_results = len(tar_files) * len(args.checkpoints)
+    expected_results = len(items) * len(args.checkpoints)
     result_count = 0
     
     while result_count < expected_results:

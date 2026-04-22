@@ -1,8 +1,8 @@
+torch
 torchvision~=0.18.1
-scikit-learn~=1.4.2
-sen2classification~=0.1.0
 torchmetrics~=1.4.0.post0
-yaml~=0.2.5
+pytorch-lightning
+scikit-learn~=1.4.2
 pyyaml~=6.0.1
 numpy~=1.23.5
 duckdb~=1.0.0
@@ -13,4 +13,5 @@ geopandas~=0.14.2
 xgboost~=2.0.3
 tqdm~=4.66.4
 schedulefree~=1.2.7
-torch
+GDAL
+PyQt5

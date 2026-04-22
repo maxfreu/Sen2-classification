@@ -6,6 +6,7 @@ import tarfile
 import shutil
 import subprocess
 import multiprocessing
+import traceback
 import yaml
 import torch
 import numpy as np
@@ -81,8 +82,8 @@ def process_data(extracted_dir: str, model, output_folder: str, args: Dict[str, 
         # Call the model's predict method
         model.predict_force_folder(
             extracted_dir,
-            seq_len=sequence_length,
             qai=qai,
+            seq_len=sequence_length,
             output_filepath=output_filepath,
             verbose=False,
             time_encoding=time_encoding,
@@ -104,6 +105,7 @@ def process_data(extracted_dir: str, model, output_folder: str, args: Dict[str, 
     
     except Exception as e:
         print(f"Error during processing of {extracted_dir}: {str(e)}")
+        traceback.print_exc()
         return False
 
 

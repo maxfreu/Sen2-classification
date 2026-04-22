@@ -14,15 +14,15 @@ module load micromamba
 eval "$(micromamba shell hook --shell=bash)"
 micromamba activate inference
 
-YEAR=2022
+YEAR=2025
 NEXT_YEAR=$((YEAR + 1))
 #MODEL_ID=2
 
-MODEL_FOLDER="$HOME/models_final_final"
+MODEL_FOLDER="$HOME/models_final"
 CHECKPOINTS=($(find $MODEL_FOLDER -name "*.ckpt"))
 MODEL_CONFIG="${MODEL_FOLDER}/config_noids.yaml"
 
-OUTPUT_FOLDER="$PROJECT/maps_final_final/${YEAR}"
+OUTPUT_FOLDER="$PROJECT/maps_final/${YEAR}"
 #mkdir -p $OUTPUT_FOLDER
 
 echo "$CHECKPOINTS"

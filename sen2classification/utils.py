@@ -333,11 +333,12 @@ def load_and_prepare_timeseries_folder(input_folder: str,
     dates = dates[valid_dates][-seq_len:]
     inference_date_mask = np.array([tmin_inference <= d < tmax_inference for d in dates])
 
+    seq_len = len(boa_filenames)
+    
     if qai > 0:
         qais = np.array(sorted(filter(lambda x: 'QAI' in x, files)))[valid_dates][-seq_len:]
+        assert len(boa_filenames) == len(qais), f"Length of BOA and QAI time series differ ({len(boa_filenames)} vs {len(qais)})."
 
-    seq_len = len(boa_filenames)
-    assert len(boa_filenames) == len(qais), f"Length of BOA and QAI time series differ ({len(boa_filenames)} vs {len(qais)})."
 
     # TODO: use a function for below stuff
     if time_encoding == "doy":

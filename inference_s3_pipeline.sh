@@ -3,15 +3,17 @@
 #SBATCH --partition=kisski
 #SBATCH --account=kisski-hawk-s2treeinference
 #SBATCH --output=slurmlogs/slurm-%A-%a.out
+#SBATCH --error=slurmlogs/slurm-%A-%a.err
 #SBATCH --gpus=4
 #SBATCH --cpus-per-task=48
-#SBATCH --nice=100
 #SBATCH --array=0-9%2
+#SBATCH -C inet
 
+set -euo pipefail
 
 module load rclone
-module load micromamba
-eval "$(micromamba shell hook --shell=bash)"
+MAMBA=/sw/rev/24.05/rome_ib_cuda_rocky8/linux-rocky8-zen2/gcc-11.4.0/micromamba-1.4.2-w3tnq7cnq77sz7l5j55qapbv65h2anpe/bin/micromamba
+eval "$($MAMBA shell hook --shell=bash)"
 micromamba activate inference
 
 YEAR=2025

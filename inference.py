@@ -29,6 +29,7 @@ def get_parser():
                         "for a given class, scaled to 0-255.")
     parser.add_argument("--num-classes", default=0, type=int, help="Number of classes the network outputs. "
                         "Only required, if --soft is given.")
+    parser.add_argument("--device", default="cuda", type=str, help="Device to run infrence on.")
     return parser
 
 
@@ -67,20 +68,20 @@ def main():
         stddev = np.array(data_config["stddev"]).astype(np.float32)
 
     model, _ = utils.load_model_from_configs_and_checkpoint(model_config_path, data_config_path, ckpt)
-    model.to("cuda")
+    model.to(args.device)
     model.eval()
     model = torch.compile(model)
 
     output_filepath = os.path.join(output_folder, f"{os.path.basename(input_folder)}.tif")
     model.predict_force_folder(input_folder,
-                               seq_len=sequence_length,
-                               qai=qai,
+                               qai,
+                               sequence_length,
                                output_filepath=output_filepath,
                                verbose=False,
                                time_encoding=data_config["time_encoding"],
                                mean=mean,
                                stddev=stddev,
-                               batch_size=2048,
+                               batch_size=500,
                                apply_argmax=not args.soft,
                                num_classes=args.num_classes,
                                # TODO: Remove this hardcoding!!!

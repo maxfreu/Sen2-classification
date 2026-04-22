@@ -30,6 +30,7 @@ def get_parser():
     parser.add_argument("--num-classes", default=0, type=int, help="Number of classes the network outputs. "
                         "Only required, if --soft is given.")
     parser.add_argument("--device", default="cuda", type=str, help="Device to run infrence on.")
+    parser.add_argument("--verbose", action="store_true")
     return parser
 
 
@@ -77,7 +78,6 @@ def main():
                                qai,
                                sequence_length,
                                output_filepath=output_filepath,
-                               verbose=False,
                                time_encoding=data_config["time_encoding"],
                                mean=mean,
                                stddev=stddev,
@@ -90,7 +90,8 @@ def main():
                                tmax_data=tmax_data,
                                tmin_inference=tmin_inference,
                                tmax_inference=tmax_inference,
-                               append_ndvi=data_config.get("append_ndvi", False)
+                               append_ndvi=data_config.get("append_ndvi", False),
+                               verbose=args.verbose
                                )
 
 #%%

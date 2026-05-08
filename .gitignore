@@ -180,3 +180,5 @@ cython_debug/
 .vscode/# pixi environments
 .pixi/*
 !.pixi/config.toml
+
+.vscode/

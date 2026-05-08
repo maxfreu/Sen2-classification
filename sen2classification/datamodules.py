@@ -142,6 +142,10 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         g = torch.Generator()
         g.manual_seed(0)
 
+        dataloader_kwargs = {}
+        if self.num_workers > 0:
+            dataloader_kwargs["multiprocessing_context"] = "fork"
+
         return torch.utils.data.DataLoader(self.training_data,
                                            pin_memory=True,
                                            shuffle=True,
@@ -149,31 +153,42 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                            num_workers=self.num_workers,
                                            persistent_workers=False,
                                            generator=g,
-                                           worker_init_fn=seed_worker)
+                                           worker_init_fn=seed_worker,
+                                           **dataloader_kwargs)
 
     def val_dataloader(self):
         g = torch.Generator()
         g.manual_seed(0)
 
+        dataloader_kwargs = {}
+        if self.num_workers > 0:
+            dataloader_kwargs["multiprocessing_context"] = "fork"
+
         return torch.utils.data.DataLoader(self.val_data,
                                            pin_memory=True,
                                            batch_size=self.batch_size,
                                            num_workers=self.num_workers,
                                            persistent_workers=False,
                                            generator=g,
-                                           worker_init_fn=seed_worker)
+                                           worker_init_fn=seed_worker,
+                                           **dataloader_kwargs)
 
     def test_dataloader(self):
         g = torch.Generator()
         g.manual_seed(0)
 
+        dataloader_kwargs = {}
+        if self.num_workers > 0:
+            dataloader_kwargs["multiprocessing_context"] = "fork"
+
         return torch.utils.data.DataLoader(self.val_data,
                                            pin_memory=True,
                                            batch_size=self.batch_size,
                                            num_workers=self.num_workers,
                                            persistent_workers=False,
                                            generator=g,
-                                           worker_init_fn=seed_worker)
+                                           worker_init_fn=seed_worker,
+                                           **dataloader_kwargs)
 
     @property
     def num_classes(self):

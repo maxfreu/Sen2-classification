@@ -60,8 +60,58 @@ def set_random_seeds(seed=1337):
     torch.cuda.manual_seed_all(seed)
 
 
+def _serialize_hparam_value(value):
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        if value.size == 1:
+            return value.item()
+        return repr(value.tolist())
+    if isinstance(value, torch.Tensor):
+        if value.numel() == 1:
+            return value.item()
+        return repr(value.detach().cpu().tolist())
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if value is None:
+        return "None"
+    if isinstance(value, (list, tuple, set)):
+        return repr(list(value))
+    return repr(value)
+
+
+def _flatten_hparams(values, prefix=""):
+    flat = {}
+    for key, value in values.items():
+        full_key = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            flat.update(_flatten_hparams(value, prefix=full_key))
+            continue
+        flat[full_key] = _serialize_hparam_value(value)
+    return flat
+
+
+def _build_logged_hparams(model, model_init_args, dataconfig):
+    excluded_dataconfig_keys = {
+        "class_mapping",
+        "input_file",
+        "mean",
+        "stddev",
+        "train_ids",
+        "val_ids",
+    }
+    filtered_dataconfig = {
+        key: value
+        for key, value in dataconfig.items()
+        if key not in excluded_dataconfig_keys
+    }
+    return _flatten_hparams(model_init_args | {"model": utils.classname(model)} | filtered_dataconfig)
+
+
 def train(model_config, data, logdir, experiment_name, version, model_extra_args={}, trainer_extra_args={},
-          experiment_file="", overwrite=True):
+          experiment_file="", overwrite=True, dataconfig=None):
     """Train a model with the given configuration and log details."""
     set_random_seeds()
 
@@ -87,13 +137,28 @@ def train(model_config, data, logdir, experiment_name, version, model_extra_args
         utils.copy_file_to_destination(output_folder, experiment_file)
 
     logger = TensorBoardLogger(logdir, model_name, version=version)
+    if dataconfig is not None:
+        logger.log_hyperparams(_build_logged_hparams(model, init_args, dataconfig))
+        if "augmentation_kwargs" in dataconfig:
+            logger.experiment.add_text(
+                "config/augmentation_kwargs",
+                yaml.safe_dump(dataconfig["augmentation_kwargs"], sort_keys=False),
+                0,
+            )
+        if "augmentation_study_run" in dataconfig:
+            logger.experiment.add_text(
+                "config/augmentation_study_run",
+                yaml.safe_dump(dataconfig["augmentation_study_run"], sort_keys=False),
+                0,
+            )
+
     mc = SchedulerFreeModelCheckpoint(dirpath=checkpoint_dir, filename="{epoch}-{step}-{val_loss:.4f}", monitor="val_loss", save_last=True, save_top_k=2)
     callbacks = [LearningRateMonitor(), EarlyStopping(patience=10, monitor="val_loss"), mc]
 
     trainer_args = {
         "max_steps": 100000,
         "log_every_n_steps": 1000,
-        "precision": "16-mixed",
+        "precision": "16-mixed"
         }
 
     trainer_args = trainer_args | trainer_extra_args
@@ -164,13 +229,18 @@ def validate(checkpoint_folder, val_ds, return_mode="single", val_years=(2018, 2
     # initialize dataloader for test dataset
     g = torch.Generator()
     g.manual_seed(0)
+    dataloader_kwargs = {}
+    if num_workers > 0:
+        dataloader_kwargs["multiprocessing_context"] = "fork"
+
     test_dataloader = torch.utils.data.DataLoader(
         val_ds,
         pin_memory=True,
         batch_size=256,
         num_workers=num_workers,
         generator=g,
-        worker_init_fn=seed_worker
+        worker_init_fn=seed_worker,
+        **dataloader_kwargs,
     )
 
     metrics = {}
@@ -272,8 +342,7 @@ def validate(checkpoint_folder, val_ds, return_mode="single", val_years=(2018, 2
         setattr(val_ds, key, value)
 
     # write out results
-    hyper_params = model_init_args | {"model": utils.classname(model)} | dataconfig
-    logger.log_hyperparams(hyper_params, metrics=metrics)
+    logger.log_metrics(metrics)
     logger.finalize("success")
 
     tend = time.time()
@@ -294,12 +363,15 @@ def train_and_validate(model_config, data, dataconfig, logdir, experiment_name, 
         model_extra_args=model_extra_args,
         trainer_extra_args=trainer_extra_args,
         experiment_file=experiment_file,
-        overwrite=overwrite
+        overwrite=overwrite,
+        dataconfig=dataconfig,
     )
 
     save_classes(output_folder, data.classes)
-    utils.save_dict_to_yaml({"model": {"class_path": str(model.__class__), "init_args": init_args}, "data": dataconfig},
-                            os.path.join(output_folder, "config.yaml"))
+    utils.save_dict_to_yaml(
+        {"model": {"class_path": str(model.__class__), "init_args": init_args}, "data": dataconfig},
+        os.path.join(output_folder, "config.yaml"),
+    )
 
     if do_validation:
         metrics = validate(

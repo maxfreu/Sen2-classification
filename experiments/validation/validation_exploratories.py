@@ -14,12 +14,12 @@ def latin_to_output_index(latin_species, class_mapping, species_dict):
     return abbrev_list.index(class_abbreviation)
 
 
-def compute_class_shares(sub_df, num_classes):
+def compute_class_shares(ep, sub_df, num_classes):
     total_area = sub_df["area"].sum()
     indices = np.arange(num_classes)
     normalized_area = np.zeros(num_classes)
     normalized_area[sub_df["y_true"]] = sub_df["area"] / total_area
-    return pd.DataFrame({"EP": [sub_df["EP"].iloc[0]] * num_classes, "y_true": indices, "normalized_area":
+    return pd.DataFrame({"EP": [ep] * num_classes, "y_true": indices, "normalized_area":
         normalized_area})
 
 
@@ -140,7 +140,13 @@ def validate_exploratories(model,
     species_areas = df.groupby(["EP", "y_true"])["area"].sum().reset_index()
 
     # compute normalized area shares per species per exploratory plot
-    area_shares = species_areas.groupby(["EP"]).apply(lambda x: compute_class_shares(x, num_classes)).droplevel("EP")
+    area_shares = pd.concat(
+        [
+            compute_class_shares(ep, group, num_classes)
+            for ep, group in species_areas.groupby("EP", sort=False)
+        ],
+        ignore_index=True,
+    )
 
     # get dominant species per plot based on basal area
     major_species = area_shares.sort_values("normalized_area").groupby(["EP"]).tail(1).sort_values("EP")

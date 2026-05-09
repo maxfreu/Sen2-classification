@@ -15,6 +15,7 @@ from sen2classification.schedulerfreemodelcheckpoint import SchedulerFreeModelCh
 from sen2classification.datamodules import TimeSeriesClassificationDataModule, seed_worker
 from .validation.validation_treesat import validate_treesat
 from .validation.validation_exploratories import validate_exploratories
+from .validation.validation_exploratories import kl_divergence
 from .validation.val_utils import checkpoint_folder_to_configfile, instantiate_model_from_checkpoint_folder_and_classname
 
 
@@ -137,8 +138,9 @@ def train(model_config, data, logdir, experiment_name, version, model_extra_args
         utils.copy_file_to_destination(output_folder, experiment_file)
 
     logger = TensorBoardLogger(logdir, model_name, version=version)
+    logged_hparams = None
     if dataconfig is not None:
-        logger.log_hyperparams(_build_logged_hparams(model, init_args, dataconfig))
+        logged_hparams = _build_logged_hparams(model, init_args, dataconfig)
         if "augmentation_kwargs" in dataconfig:
             logger.experiment.add_text(
                 "config/augmentation_kwargs",
@@ -174,10 +176,11 @@ def train(model_config, data, logdir, experiment_name, version, model_extra_args
     state_dict = torch.load(mc.best_model_path, map_location=model.device)["state_dict"]
     model.load_state_dict(state_dict)
 
-    return model, output_folder, mc.best_model_path, logger, init_args
+    return model, output_folder, mc.best_model_path, logger, init_args, logged_hparams
 
 
-def validate(checkpoint_folder, val_ds, return_mode="single", val_years=(2018, 2020, 2022), num_workers=0):
+def validate(checkpoint_folder, val_ds, return_mode="single", val_years=(2018, 2020, 2022), num_workers=0,
+             logger=None, logged_hparams=None):
     """Validate the best trained model and compute metrics."""
     print("Starting validation")
     tstart = time.time()
@@ -208,7 +211,8 @@ def validate(checkpoint_folder, val_ds, return_mode="single", val_years=(2018, 2
     logdir = str(Path(checkpoint_folder).parents[2])
     model_name = os.path.basename(str(Path(checkpoint_folder).parents[1]))
     version = os.path.basename(str(Path(checkpoint_folder).parents[0]))
-    logger = TensorBoardLogger(logdir, model_name, version=version)
+    if logger is None:
+        logger = TensorBoardLogger(logdir, model_name, version=version)
 
     # create folder for all eval outputs
     output_folder = os.path.join(logdir, model_name, version, "eval")
@@ -250,6 +254,7 @@ def validate(checkpoint_folder, val_ds, return_mode="single", val_years=(2018, 2
         print(f"Validating S2GNFI for seq_len={seq_len}")
         t0 = time.time()
         accs_ds = []
+        kl_divs_ds = []
         for year in val_years:
             val_ds.sequence_length = seq_len
             val_ds.return_year = year
@@ -261,6 +266,9 @@ def validate(checkpoint_folder, val_ds, return_mode="single", val_years=(2018, 2
 
             acc_ds, cm, val_pred = model.test_on_dataloader(test_dataloader)
             accs_ds.append(acc_ds)
+            share_true = cm.sum(axis=1) / cm.sum()
+            share_pred = cm.sum(axis=0) / cm.sum()
+            kl_divs_ds.append(kl_divergence(share_pred, share_true))
 
             # plot_confusion_matrices(
             #     os.path.join(output_folder, "plots"), cm, data.classes, "S2GNFI", f"seq_len={seq_len}_year={year}")
@@ -327,6 +335,7 @@ def validate(checkpoint_folder, val_ds, return_mode="single", val_years=(2018, 2
 
         metrics_this_seq_len = {
             f"acc_ds_avg_seq_len={seq_len}": np.mean(accs_ds),
+            f"kl_div_ds_avg_seq_len={seq_len}": np.mean(kl_divs_ds),
             f"acc_expl_seq_len={seq_len}": acc_expl,
             f"acc_treesat_seq_len={seq_len}": acc_treesat,
             f"kl_div_expl_seq_len={seq_len}": kl_div_expl,
@@ -335,13 +344,24 @@ def validate(checkpoint_folder, val_ds, return_mode="single", val_years=(2018, 2
 
         metrics = metrics | metrics_this_seq_len
 
-        write_report(output_folder, f"seq_len={seq_len}", val_years, metrics | {f"acc_ds_seq_len={seq_len}": accs_ds})
+        write_report(
+            output_folder,
+            f"seq_len={seq_len}",
+            val_years,
+            metrics
+            | {
+                f"acc_ds_seq_len={seq_len}": accs_ds,
+                f"kl_div_ds_seq_len={seq_len}": kl_divs_ds,
+            },
+        )
 
     # Restore the previous state
     for key, value in previous_state.items():
         setattr(val_ds, key, value)
 
     # write out results
+    if logged_hparams is not None:
+        logger.log_hyperparams(logged_hparams, metrics)
     logger.log_metrics(metrics)
     logger.finalize("success")
 
@@ -354,7 +374,7 @@ def train_and_validate(model_config, data, dataconfig, logdir, experiment_name, 
                        trainer_extra_args={}, experiment_file="", do_validation=True, val_return_mode="single",
                        val_years=(2018, 2020, 2022), overwrite=True):
     """Wrapper function to train and validate the model."""
-    model, output_folder, _, _, init_args = train(
+    model, output_folder, _, logger, init_args, logged_hparams = train(
         model_config=model_config,
         data=data,
         logdir=logdir,
@@ -379,7 +399,9 @@ def train_and_validate(model_config, data, dataconfig, logdir, experiment_name, 
             val_ds=data.val_data,
             return_mode=val_return_mode,
             val_years=val_years,
-            num_workers=len(os.sched_getaffinity(0)) // 2
+            num_workers=len(os.sched_getaffinity(0)) // 2,
+            logger=logger,
+            logged_hparams=logged_hparams,
         )
     else:
         metrics = {}

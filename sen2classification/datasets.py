@@ -1,8 +1,6 @@
 import os
 import torch
-import sqlite3
 import duckdb
-import datetime
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset, IterableDataset
@@ -109,22 +107,6 @@ class InMemoryTimeSeriesDataset(Dataset):
         self.df = self.load_data(input_filepath, dbname, where, plot_ids)
         self.df = self.df[(self.df.qai & quality_mask) == 0]
 
-        # 16 bit is a storage format - we convert it to 32 bit for faster calculations at the cost of RAM
-        # mean = mean.astype(np.float32)
-        # inv_stddev = 1 / (stddev.astype(np.float32) + 1e-7)
-        # self.df.boa = [(np.frombuffer(x, dtype=np.int16).astype(np.float32) - mean) * inv_stddev for x in self.df.boa]
-        # convert the bytes to a numpy array
-        self.df.boa = self.convert_bytearrays_to_numpy(self.df.boa, append_ndvi)
-
-        # throw out all values smaller -5000
-        # would be faster to remove all this in the file itself...
-        if eliminate_nodata:
-            self.df = self.df[[x[0] > -5000 for x in self.df.boa]]
-
-        self.df.time = [datetime.date.fromtimestamp(t) for t in self.df.time]
-        self.df["dayssinceepoch"] = [(t - datetime.date(2015, 1, 1)).days for t in self.df.time]
-        self.df["year"] = [t.year for t in self.df.time]
-
         # throw out all disturbance years before the NFI
         self.df.loc[self.df['disturbance_year'] < 2011, 'disturbance_year'] = 9999
 
@@ -137,8 +119,21 @@ class InMemoryTimeSeriesDataset(Dataset):
         # or that are spruce and not continuously present until 2022
         self.df = self.df[np.logical_or(self.df.species != 10, self.df.present_2022)]
         self.df = self.df.drop(["disturbance_year", "present_2022", "qai"], axis=1)
-        self.df.sort_values("time", inplace=True)
-        self.df = self.df.drop(["time"], axis=1)
+        self.df.sort_values(["year", "doy"], inplace=True)
+
+        # Keep BOA values in one dense matrix and store only row indices in the dataframe.
+        raw_boa = self.df.pop("boa")
+        self.boa_matrix = self.convert_bytearrays_to_numpy(raw_boa, append_ndvi)
+
+        # throw out all values smaller -5000
+        # would be faster to remove all this in the file itself...
+        if eliminate_nodata:
+            valid_rows = self.boa_matrix[:, 0] > -5000
+            self.df = self.df.loc[valid_rows].copy()
+            self.boa_matrix = self.boa_matrix[valid_rows]
+
+        self.df = self.df.reset_index(drop=True)
+        self.df["boa_idx"] = np.arange(len(self.df), dtype=np.int32)
         self.grouped_df = self.df.groupby("tree_id")
         self.tree_ids = np.array(list(self.grouped_df.groups.keys()))
         rng = np.random.default_rng(seed=42)
@@ -163,46 +158,40 @@ class InMemoryTimeSeriesDataset(Dataset):
             ndvi = (nir - red) / (nir + red + 1e-5)
             ndvi = np.clip(ndvi, -1, 1)
             boa = np.column_stack((boa, ndvi))
-        return list(boa)
+        return boa
 
     def load_data(self, input_filepath, dbname, where, plot_ids):
         input_filetype = os.path.splitext(os.path.basename(input_filepath))[1]
 
-        columns = "tree_id, species, boa, qai, time, doy, disturbance_year, present_2022"
+        columns = """
+            tree_id,
+            species,
+            boa,
+            qai,
+            doy,
+            cast(extract(year from to_timestamp(time)) as integer) as year,
+            cast(date_diff('day', date '2015-01-01', cast(to_timestamp(time) as date)) as integer) as dayssinceepoch,
+            disturbance_year,
+            present_2022
+        """
         if input_filetype == ".sqlite":
-            conn = sqlite3.connect(input_filepath)
-            conn.text_factory = bytes  # this makes sqlite return strings as bytes that we can parse via numpy
-
-            # load all data or only some plots
-            if plot_ids is None:
-                if where:
-                    self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname} WHERE {where}", conn)
-                else:
-                    self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname}", conn)
-            else:
-                if where:
-                    self.df = pd.read_sql_query(
-                        f"SELECT {columns} FROM {dbname} WHERE tnr IN {tuple(plot_ids)} AND ({where})", conn)
-                else:
-                    self.df = pd.read_sql_query(f"SELECT {columns} FROM {dbname} WHERE tnr IN {tuple(plot_ids)}", conn)
-
-            conn.close()
-
+            source = f"sqlite_scan('{input_filepath}', '{dbname}')"
         elif input_filetype == ".parquet" or input_filetype == ".parq":
-            if plot_ids is None:
-                if where:
-                    self.df = duckdb.query(f"select {columns} from '{input_filepath}' where {where}").df()
-                else:
-                    self.df = duckdb.query(f"select {columns} from '{input_filepath}'").df()
-            else:
-                if where:
-                    self.df = duckdb.query(
-                        f"select {columns} from '{input_filepath}' WHERE tnr IN {tuple(plot_ids)} AND ({where})").df()
-                else:
-                    self.df = duckdb.query(
-                        f"select {columns} from '{input_filepath}' WHERE tnr IN {tuple(plot_ids)}").df()
+            source = f"'{input_filepath}'"
+        else:
+            raise RuntimeError(f"Unsupported input file type: {input_filetype}")
 
-        return self.df
+        filters = []
+        if plot_ids is not None:
+            filters.append(f"tnr IN {tuple(plot_ids)}")
+        if where:
+            filters.append(f"({where})")
+
+        query = f"SELECT {columns} FROM {source}"
+        if filters:
+            query = f"{query} WHERE {' AND '.join(filters)}"
+
+        return duckdb.query(query).df()
 
     def class_index(self, classname):
         """Returns the numerical ID of a class."""
@@ -285,7 +274,8 @@ class InMemoryTimeSeriesDataset(Dataset):
         boa = np.zeros((self.sequence_length, self.satellite_input_channels), dtype=np.float32)
         times = np.zeros(self.sequence_length, dtype=np.int32)
 
-        boa_selection = np.stack(selection.boa[:n_obs])
+        boa_idx = selection.boa_idx.iloc[:n_obs].to_numpy()
+        boa_selection = self.boa_matrix[boa_idx]
 
         if self.time_encoding == "doy":
             time_selection = selection.doy[:n_obs].to_numpy()
@@ -329,5 +319,9 @@ class InMemoryTimeSeriesDataset(Dataset):
         print(f"worker {worker_id} subset size: {len(subset)} / {len(all_ids)}")
 
         dataset.tree_ids = subset
-        dataset.df = dataset.df[dataset.df["tree_id"].isin(subset)]
+        dataset.df = dataset.df[dataset.df["tree_id"].isin(subset)].copy()
+        boa_idx = dataset.df["boa_idx"].to_numpy()
+        dataset.boa_matrix = dataset.boa_matrix[boa_idx]
+        dataset.df = dataset.df.reset_index(drop=True)
+        dataset.df["boa_idx"] = np.arange(len(dataset.df), dtype=np.int32)
         dataset.grouped_df = dataset.df.groupby("tree_id")

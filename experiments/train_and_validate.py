@@ -141,6 +141,7 @@ def train(model_config, data, logdir, experiment_name, version, model_extra_args
     logged_hparams = None
     if dataconfig is not None:
         logged_hparams = _build_logged_hparams(model, init_args, dataconfig)
+        logger.log_hyperparams(logged_hparams)
         if "augmentation_kwargs" in dataconfig:
             logger.experiment.add_text(
                 "config/augmentation_kwargs",

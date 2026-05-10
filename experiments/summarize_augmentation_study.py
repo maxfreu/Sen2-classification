@@ -59,6 +59,23 @@ def format_kl_div(value):
     return f"{value:.4f}"
 
 
+def escape_latex(value):
+    text = str(value)
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+        "~": r"\textasciitilde{}",
+        "^": r"\textasciicircum{}",
+    }
+    return "".join(replacements.get(char, char) for char in text)
+
+
 def write_csv(rows, output_path):
     with output_path.open("w", newline="") as handle:
         writer = csv.DictWriter(
@@ -107,6 +124,71 @@ def get_best_rows_by_variant(rows, group):
     return best_rows
 
 
+def get_paper_table_rows(rows):
+    baseline_row = next((row for row in rows if row["group"] == "baseline"), None)
+    default_row = next((row for row in rows if row["group"] == "final"), None)
+    best_single_rows = get_best_rows_by_variant(rows, "single")
+
+    paper_rows = []
+    if baseline_row is not None:
+        paper_rows.append(
+            {
+                "variant": baseline_row["variant"],
+                "setting": baseline_row["setting"],
+                "metric": baseline_row["metric"],
+                "kl_div": baseline_row["kl_div"],
+                "delta_vs_baseline": 0.0 if baseline_row["metric"] is not None else None,
+            }
+        )
+
+    if default_row is not None:
+        paper_rows.append(
+            {
+                "variant": default_row["variant"],
+                "setting": default_row["setting"],
+                "metric": default_row["metric"],
+                "kl_div": default_row["kl_div"],
+                "delta_vs_baseline": default_row["delta_vs_baseline"],
+            }
+        )
+
+    for row in best_single_rows:
+        paper_rows.append(
+            {
+                "variant": row["variant"],
+                "setting": row["setting"],
+                "metric": row["metric"],
+                "kl_div": row["kl_div"],
+                "delta_vs_baseline": row["delta_vs_baseline"],
+            }
+        )
+
+    return paper_rows
+
+
+def build_latex_table(rows):
+    lines = [
+        "\\begin{tabular}{llrrr}",
+        "\\hline",
+        "Variant & Best setting & Acc (\\%) & KL div & $\\Delta$ vs. baseline (pp) \\\\",
+        "\\hline",
+    ]
+
+    for row in rows:
+        lines.append(
+            "{} & {} & {} & {} & {} \\\\".format(
+                escape_latex(row["variant"]),
+                escape_latex(row["setting"]),
+                format_percent(row["metric"]),
+                format_kl_div(row["kl_div"]),
+                format_delta(row["delta_vs_baseline"]),
+            )
+        )
+
+    lines.extend(["\\hline", "\\end{tabular}"])
+    return "\n".join(lines)
+
+
 def parse_variant_and_setting(group, label):
     if group == "baseline":
         return "baseline", "none"
@@ -151,10 +233,7 @@ def sort_rows(rows):
 
 
 def build_markdown(rows, metric_name, kl_metric_name):
-    completed_rows = [row for row in rows if row["status"] == "done"]
-    baseline_row = next((row for row in rows if row["group"] == "baseline"), None)
-    default_row = next((row for row in rows if row["group"] == "final"), None)
-    best_single_rows = get_best_rows_by_variant(rows, "single")
+    paper_rows = get_paper_table_rows(rows)
 
     lines = [
         f"# Augmentation Study Summary ({metric_name}; {kl_metric_name})",
@@ -184,20 +263,19 @@ def build_markdown(rows, metric_name, kl_metric_name):
         ]
     )
 
-    if baseline_row is not None:
-        lines.append(
-            f"| baseline | {baseline_row['setting']} | {format_percent(baseline_row['metric'])} | {format_kl_div(baseline_row['kl_div'])} | {format_delta(0.0 if baseline_row['metric'] is not None else None)} |"
-        )
-
-    if default_row is not None:
-        lines.append(
-            f"| {default_row['variant']} | {default_row['setting']} | {format_percent(default_row['metric'])} | {format_kl_div(default_row['kl_div'])} | {format_delta(default_row['delta_vs_baseline'])} |"
-        )
-
-    for row in best_single_rows:
+    for row in paper_rows:
         lines.append(
             f"| {row['variant']} | {row['setting']} | {format_percent(row['metric'])} | {format_kl_div(row['kl_div'])} | {format_delta(row['delta_vs_baseline'])} |"
         )
+
+    lines.extend([
+        "",
+        "## LaTeX Table",
+        "",
+        "```latex",
+        build_latex_table(paper_rows),
+        "```",
+    ])
 
     return "\n".join(lines) + "\n"
 

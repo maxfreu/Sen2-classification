@@ -160,22 +160,43 @@ def build_runs():
     # Already tested.
     # runs.extend(build_single_augmentation_runs(disabled))
 
+    # runs.append(
+    #     build_run(
+    #         name="positive_augmentations_default_probabilities_best_strengths",
+    #         label="positive augmentations (best strengths, default probabilities)",
+    #         group="final",
+    #         variant="positive augmentations",
+    #         setting="best strengths + default probabilities",
+    #         augmentation_kwargs=disabled
+    #         | {
+    #             "p_time_jitter": defaults["p_time_jitter"],
+    #             "time_jitter_max": 10,
+    #             "p_blackout": defaults["p_blackout"],
+    #             "blackout_percentage": 0.15,
+    #             "p_observation_dropout": defaults["p_observation_dropout"],
+    #             "dropout_percentage": 0.3,
+    #             "p_vegetation_period_modify": defaults["p_vegetation_period_modify"],
+    #             "veg_period_max_delta": 30,
+    #         },
+    #     )
+    # )
+
     runs.append(
         build_run(
-            name="positive_augmentations_default_probabilities_best_strengths",
-            label="positive augmentations (best strengths, default probabilities)",
+            name="positive_augmentations_p1_best_strengths",
+            label="positive augmentations (best strengths, p 1)",
             group="final",
             variant="positive augmentations",
-            setting="best strengths + default probabilities",
+            setting="best strengths + p 1",
             augmentation_kwargs=disabled
             | {
-                "p_time_jitter": defaults["p_time_jitter"],
+                "p_time_jitter": 1,
                 "time_jitter_max": 10,
-                "p_blackout": defaults["p_blackout"],
+                "p_blackout": 1,
                 "blackout_percentage": 0.15,
-                "p_observation_dropout": defaults["p_observation_dropout"],
+                "p_observation_dropout": 1,
                 "dropout_percentage": 0.3,
-                "p_vegetation_period_modify": defaults["p_vegetation_period_modify"],
+                "p_vegetation_period_modify": 1,
                 "veg_period_max_delta": 30,
             },
         )

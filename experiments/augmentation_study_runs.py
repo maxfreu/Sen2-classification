@@ -18,16 +18,20 @@ AUGMENTATION_LABELS = {
 
 
 AUGMENTATION_SWEEP_VALUES = {
-    "p_random_noise": ("noise_scale", (0.01, 0.02, 0.04)),
-    "p_constant_offset": ("offset_scale", (0.01, 0.02, 0.04)),
+    # Already tested.
+    # "p_random_noise": ("noise_scale", (0.01, 0.02, 0.04)),
+    # Already tested.
+    # "p_constant_offset": ("offset_scale", (0.01, 0.02, 0.04)),
     # Best current setting: time_jitter_max=14.
     # "p_time_jitter": ("time_jitter_max", (7, 14, 28)),
     "p_time_jitter": ("time_jitter_max", (10, 18, 42)),
-    "p_time_dependent_noise": ("time_noise_strength", (0.01, 0.02, 0.04)),
+    # Already tested.
+    # "p_time_dependent_noise": ("time_noise_strength", (0.01, 0.02, 0.04)),
     # Best current setting: blackout_percentage=0.05.
     # "p_blackout": ("blackout_percentage", (0.01, 0.02, 0.05)),
     "p_blackout": ("blackout_percentage", (0.03, 0.07, 0.15)),
-    "p_gamma": ("gamma_offset", (0.001, 0.002, 0.005)),
+    # Already tested.
+    # "p_gamma": ("gamma_offset", (0.001, 0.002, 0.005)),
     # Best current setting: dropout_percentage=0.3.
     # "p_observation_dropout": ("dropout_percentage", (0.1, 0.2, 0.3)),
     "p_observation_dropout": ("dropout_percentage", (0.25, 0.35, 0.5)),
@@ -38,8 +42,10 @@ AUGMENTATION_SWEEP_VALUES = {
 
 
 CLOUD_PROBABILITY_TESTS = {
-    "p_cloud_simulation": 0.02,
-    "p_cloud_shadow": 0.02,
+    # Already tested.
+    # "p_cloud_simulation": 0.02,
+    # Already tested.
+    # "p_cloud_shadow": 0.02,
 }
 
 
@@ -115,34 +121,40 @@ def get_disabled_augmentation_kwargs():
 
 
 def build_runs():
-    defaults = get_default_augmentation_kwargs()
     disabled = get_disabled_augmentation_kwargs()
 
-    runs = [
-        build_run(
-            name="baseline_no_aug",
-            label="baseline",
-            group="baseline",
-            variant="baseline",
-            setting="none",
-            augmentation_kwargs=disabled,
-        )
-    ]
+    runs = []
 
-    runs.extend(
-        [
-            build_run(
-                name="all_augmentations_default_values",
-                label="all augmentations (defaults)",
-                group="final",
-                variant="all augmentations",
-                setting="defaults",
-                augmentation_kwargs=defaults,
-            ),
-        ]
-    )
+    # Already tested.
+    # runs.append(
+    #     build_run(
+    #         name="baseline_no_aug",
+    #         label="baseline",
+    #         group="baseline",
+    #         variant="baseline",
+    #         setting="none",
+    #         augmentation_kwargs=disabled,
+    #     )
+    # )
+
+    # Already tested.
+    # defaults = get_default_augmentation_kwargs()
+    # runs.extend(
+    #     [
+    #         build_run(
+    #             name="all_augmentations_default_values",
+    #             label="all augmentations (defaults)",
+    #             group="final",
+    #             variant="all augmentations",
+    #             setting="defaults",
+    #             augmentation_kwargs=defaults,
+    #         ),
+    #     ]
+    # )
 
     runs.extend(build_single_augmentation_runs(disabled))
-    runs.extend(build_probability_only_runs(disabled))
+
+    # Already tested.
+    # runs.extend(build_probability_only_runs(disabled))
 
     return runs

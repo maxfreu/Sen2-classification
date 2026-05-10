@@ -22,22 +22,26 @@ AUGMENTATION_SWEEP_VALUES = {
     # "p_random_noise": ("noise_scale", (0.01, 0.02, 0.04)),
     # Already tested.
     # "p_constant_offset": ("offset_scale", (0.01, 0.02, 0.04)),
-    # Best current setting: time_jitter_max=14.
+    # Already tested.
     # "p_time_jitter": ("time_jitter_max", (7, 14, 28)),
-    "p_time_jitter": ("time_jitter_max", (10, 18, 42)),
+    # Already tested.
+    # "p_time_jitter": ("time_jitter_max", (10, 18, 42)),
     # Already tested.
     # "p_time_dependent_noise": ("time_noise_strength", (0.01, 0.02, 0.04)),
-    # Best current setting: blackout_percentage=0.05.
+    # Already tested.
     # "p_blackout": ("blackout_percentage", (0.01, 0.02, 0.05)),
-    "p_blackout": ("blackout_percentage", (0.03, 0.07, 0.15)),
+    # Already tested.
+    # "p_blackout": ("blackout_percentage", (0.03, 0.07, 0.15)),
     # Already tested.
     # "p_gamma": ("gamma_offset", (0.001, 0.002, 0.005)),
-    # Best current setting: dropout_percentage=0.3.
+    # Already tested.
     # "p_observation_dropout": ("dropout_percentage", (0.1, 0.2, 0.3)),
-    "p_observation_dropout": ("dropout_percentage", (0.25, 0.35, 0.5)),
-    # Best current setting: veg_period_max_delta=10.
+    # Already tested.
+    # "p_observation_dropout": ("dropout_percentage", (0.25, 0.35, 0.5)),
+    # Already tested.
     # "p_vegetation_period_modify": ("veg_period_max_delta", (5, 10, 20)),
-    "p_vegetation_period_modify": ("veg_period_max_delta", (8, 14, 30)),
+    # Already tested.
+    # "p_vegetation_period_modify": ("veg_period_max_delta", (8, 14, 30)),
 }
 
 
@@ -122,6 +126,7 @@ def get_disabled_augmentation_kwargs():
 
 def build_runs():
     disabled = get_disabled_augmentation_kwargs()
+    defaults = get_default_augmentation_kwargs()
 
     runs = []
 
@@ -152,7 +157,29 @@ def build_runs():
     #     ]
     # )
 
-    runs.extend(build_single_augmentation_runs(disabled))
+    # Already tested.
+    # runs.extend(build_single_augmentation_runs(disabled))
+
+    runs.append(
+        build_run(
+            name="positive_augmentations_default_probabilities_best_strengths",
+            label="positive augmentations (best strengths, default probabilities)",
+            group="final",
+            variant="positive augmentations",
+            setting="best strengths + default probabilities",
+            augmentation_kwargs=disabled
+            | {
+                "p_time_jitter": defaults["p_time_jitter"],
+                "time_jitter_max": 10,
+                "p_blackout": defaults["p_blackout"],
+                "blackout_percentage": 0.15,
+                "p_observation_dropout": defaults["p_observation_dropout"],
+                "dropout_percentage": 0.3,
+                "p_vegetation_period_modify": defaults["p_vegetation_period_modify"],
+                "veg_period_max_delta": 30,
+            },
+        )
+    )
 
     # Already tested.
     # runs.extend(build_probability_only_runs(disabled))

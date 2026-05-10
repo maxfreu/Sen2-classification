@@ -3,13 +3,12 @@ import ast
 import csv
 from pathlib import Path
 
+import yaml
+
 if __package__ in (None, ""):
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from experiments.augmentation_study_runs import build_runs
-
 
 def parse_metric_value(raw_value):
     try:
@@ -33,11 +32,13 @@ def parse_report(report_path):
     return metrics
 
 
-def find_run_directory(output_root, experiment_name, version):
-    matches = sorted(output_root.glob(f"{experiment_name}_*/{version}"))
-    if not matches:
-        return None
-    return matches[0]
+def iter_run_directories(output_root, experiment_name):
+    for experiment_dir in sorted(output_root.glob(f"{experiment_name}_*")):
+        if not experiment_dir.is_dir():
+            continue
+        for run_dir in sorted(experiment_dir.iterdir()):
+            if run_dir.is_dir() and (run_dir / "config.yaml").exists():
+                yield run_dir
 
 
 def format_percent(value):
@@ -104,6 +105,49 @@ def get_best_rows_by_variant(rows, group):
         best_rows.append(max(candidates, key=lambda row: row["metric"]))
 
     return best_rows
+
+
+def parse_variant_and_setting(group, label):
+    if group == "baseline":
+        return "baseline", "none"
+    if group == "final":
+        return "all augmentations", "defaults"
+    if label.endswith(")") and " (" in label:
+        variant, setting = label.rsplit(" (", 1)
+        return variant, setting[:-1]
+    return label, ""
+
+
+def load_run_metadata(run_dir):
+    config = yaml.safe_load((run_dir / "config.yaml").read_text())
+    data_config = config.get("data", {})
+    study_run = data_config.get("augmentation_study_run", {})
+
+    group = study_run.get("group", "")
+    label = study_run.get("label", run_dir.name)
+    variant, setting = parse_variant_and_setting(group, label)
+
+    return {
+        "id": study_run.get("id"),
+        "name": study_run.get("name", run_dir.name),
+        "label": label,
+        "group": group,
+        "variant": variant,
+        "setting": setting,
+    }
+
+
+def sort_rows(rows):
+    group_order = {"baseline": 0, "final": 1, "single": 2}
+    return sorted(
+        rows,
+        key=lambda row: (
+            group_order.get(row["group"], 99),
+            row["variant"],
+            row["setting"],
+            row["name"],
+        ),
+    )
 
 
 def build_markdown(rows, metric_name, kl_metric_name):
@@ -173,15 +217,14 @@ def main():
     rows = []
     baseline_metric = None
 
-    for run_id, run in enumerate(build_runs()):
-        version = f"{run_id:02d}_{run['name']}"
-        run_dir = find_run_directory(output_root, args.experiment_name, version)
-        report_path = None if run_dir is None else run_dir / "eval" / "validation_report_seq_len=64.txt"
+    for run_dir in iter_run_directories(output_root, args.experiment_name):
+        run = load_run_metadata(run_dir)
+        report_path = run_dir / "eval" / "validation_report_seq_len=64.txt"
 
         metric_value = None
         kl_div_value = None
         status = "missing"
-        if report_path is not None and report_path.exists():
+        if report_path.exists():
             report_metrics = parse_report(report_path)
             metric_value = report_metrics.get(args.metric)
             kl_div_value = report_metrics.get(args.kl_metric)
@@ -192,12 +235,12 @@ def main():
 
         rows.append(
             {
-                "id": run_id,
+                "id": run["id"],
                 "name": run["name"],
                 "label": run["label"],
                 "group": run["group"],
-                "variant": run.get("variant", run["label"]),
-                "setting": run.get("setting", ""),
+                "variant": run["variant"],
+                "setting": run["setting"],
                 "status": status,
                 "metric": metric_value,
                 "accuracy_pct": format_percent(metric_value),
@@ -207,6 +250,8 @@ def main():
                 "output_dir": "" if run_dir is None else str(run_dir),
             }
         )
+
+    rows = sort_rows(rows)
 
     for row in rows:
         if row["metric"] is not None and baseline_metric is not None:

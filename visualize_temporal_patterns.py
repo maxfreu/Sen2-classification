@@ -25,19 +25,21 @@ def load_stats():
 def load_testdatachunk(input_filepath, columns, where):
     mean, stddev = load_stats()
     df = duckdb.query(f"select {columns} from '{input_filepath}' WHERE {where}").df()
-    df.boa = InMemoryTimeSeriesDataset.convert_bytearrays_to_numpy(df.boa, False)
-    return df, mean, stddev  # Return mean and stddev for augmentation
+    boa_matrix = InMemoryTimeSeriesDataset.convert_bytearrays_to_numpy(df.pop("boa"), False)
+    df = df.reset_index(drop=True)
+    df["boa_idx"] = np.arange(len(df), dtype=np.int32)
+    return df, boa_matrix, mean, stddev  # Return mean and stddev for augmentation
 
 
 def load_and_prepare_data():
-    df_pandas, mean, stddev = load_testdatachunk(input_filepath="/home/max/dr/extract_sentinel_pixels/datasets/S2GNFI_V1.parquet",
+    df_pandas, boa_matrix, mean, stddev = load_testdatachunk(input_filepath="/home/max/dr/extract_sentinel_pixels/datasets/S2GNFI_V1.parquet",
                                   columns=', '.join(("tree_id", "time", "species", "boa", "qai", "doy", "species")),
                                   where="(qai & 31) == 0 and species > 0 limit 1000000")
 
     df_pandas.time = [datetime.date.fromtimestamp(t) for t in df_pandas.time]
     df_pandas["dayssinceepoch"] = [(t - datetime.date(2015, 1, 1)).days for t in df_pandas.time]
     df_pandas["year"] = [t.year for t in df_pandas.time]
-    return df_pandas, mean, stddev
+    return df_pandas, boa_matrix, mean, stddev
 
 
 class ReflectanceVisualizerApp(QMainWindow):
@@ -47,7 +49,7 @@ class ReflectanceVisualizerApp(QMainWindow):
         self.setGeometry(100, 100, 1200, 800)
         
         # Load data
-        self.df, self.mean, self.stddev = load_and_prepare_data()
+        self.df, self.boa_matrix, self.mean, self.stddev = load_and_prepare_data()
         
         # Extract unique species and years
         self.species_list = sorted(self.df.species.unique())
@@ -166,7 +168,7 @@ class ReflectanceVisualizerApp(QMainWindow):
                 for _, row in species_year_data.iterrows():
                     date = row.time
                     week = date.isocalendar()[1]  # Get ISO week number
-                    reflectance = row.boa[band_idx]
+                    reflectance = self.boa_matrix[row.boa_idx, band_idx]
                     weekly_data[species_id][year][week-1].append(reflectance)
         
         # Calculate medians

@@ -29,19 +29,21 @@ def load_stats():
 def load_testdatachunk(input_filepath, columns, where):
     mean, stddev = load_stats()
     df = duckdb.query(f"select {columns} from '{input_filepath}' WHERE {where}").df()
-    df.boa = InMemoryTimeSeriesDataset.convert_bytearrays_to_numpy(df.boa, False)
-    return df, mean, stddev  # Return mean and stddev for augmentation
+    boa_matrix = InMemoryTimeSeriesDataset.convert_bytearrays_to_numpy(df.pop("boa"), False)
+    df = df.reset_index(drop=True)
+    df["boa_idx"] = np.arange(len(df), dtype=np.int32)
+    return df, boa_matrix, mean, stddev  # Return mean and stddev for augmentation
 
 
 def load_and_prepare_data():
-    df_pandas, mean, stddev = load_testdatachunk(input_filepath="/home/max/dr/extract_sentinel_pixels/datasets/S2GNFI_V1.parquet",
+    df_pandas, boa_matrix, mean, stddev = load_testdatachunk(input_filepath="/home/max/dr/extract_sentinel_pixels/datasets/S2GNFI_V1.parquet",
                                   columns=', '.join(("tree_id", "time", "species", "boa", "qai", "doy", "species")),
                                   where="(qai & 31) == 0 and species > 0 limit 1000000")
 
     df_pandas.time = [datetime.date.fromtimestamp(t) for t in df_pandas.time]
     df_pandas["dayssinceepoch"] = [(t - datetime.date(2015, 1, 1)).days for t in df_pandas.time]
     df_pandas["year"] = [t.year for t in df_pandas.time]
-    return df_pandas, mean, stddev
+    return df_pandas, boa_matrix, mean, stddev
 
 
 class LabeledSlider(QWidget):
@@ -83,7 +85,7 @@ class AugmentationVisualizer(QMainWindow):
         self.setMinimumSize(800, 600)  # Set minimum size to ensure controls are visible
         
         # Load data
-        self.df_pandas, self.mean, self.stddev = load_and_prepare_data()
+        self.df_pandas, self.boa_matrix, self.mean, self.stddev = load_and_prepare_data()
         self.tree_ids = np.unique(self.df_pandas.tree_id)
         self.grouped_df = self.df_pandas.groupby("tree_id")
         
@@ -119,10 +121,10 @@ class AugmentationVisualizer(QMainWindow):
             # Extract species information
             self.species = year_data.iloc[0].species
             
-            # Extract doy and boa from the filtered data
-            sample_data = year_data.loc[:, ["doy", "boa"]].sort_values("doy")
-            self.time = np.array(sample_data.doy)
-            self.boa = np.stack(np.array(sample_data.boa))
+            # Reconstruct the observation matrix from dense BOA storage.
+            sample_data = year_data.loc[:, ["doy", "boa_idx"]].sort_values("doy")
+            self.time = sample_data.doy.to_numpy()
+            self.boa = self.boa_matrix[sample_data.boa_idx.to_numpy()]
             
             # Update title with current selections including species
             self.title = f"Tree ID: {tree_id}, Species: {self.species}, Year: {self.current_year}"
@@ -174,6 +176,22 @@ class AugmentationVisualizer(QMainWindow):
         self.unnormalize_checkbox = QCheckBox("Show Unnormalized Values")
         self.unnormalize_checkbox.setChecked(False)
         self.unnormalize_checkbox.stateChanged.connect(self.update_plot)
+
+        self.auto_ylim_checkbox = QCheckBox("Auto Y-Axis Limits")
+        self.auto_ylim_checkbox.setChecked(True)
+        self.auto_ylim_checkbox.stateChanged.connect(self.on_ylim_mode_changed)
+
+        y_min_label = QLabel("Y Min:")
+        self.y_min_edit = QLineEdit()
+        self.y_min_edit.setPlaceholderText("auto")
+        self.y_min_edit.setEnabled(False)
+        self.y_min_edit.editingFinished.connect(self.update_plot)
+
+        y_max_label = QLabel("Y Max:")
+        self.y_max_edit = QLineEdit()
+        self.y_max_edit.setPlaceholderText("auto")
+        self.y_max_edit.setEnabled(False)
+        self.y_max_edit.editingFinished.connect(self.update_plot)
         
         # Apply button
         self.apply_tree_button = QPushButton("Apply")
@@ -186,7 +204,12 @@ class AugmentationVisualizer(QMainWindow):
         data_layout.addWidget(self.tree_index_edit, 1, 1)
         data_layout.addWidget(tree_count_label, 1, 2)
         data_layout.addWidget(self.unnormalize_checkbox, 2, 0, 1, 3)
-        data_layout.addWidget(self.apply_tree_button, 3, 0, 1, 3)
+        data_layout.addWidget(self.auto_ylim_checkbox, 3, 0, 1, 3)
+        data_layout.addWidget(y_min_label, 4, 0)
+        data_layout.addWidget(self.y_min_edit, 4, 1, 1, 2)
+        data_layout.addWidget(y_max_label, 5, 0)
+        data_layout.addWidget(self.y_max_edit, 5, 1, 1, 2)
+        data_layout.addWidget(self.apply_tree_button, 6, 0, 1, 3)
         
         data_group.setLayout(data_layout)
         
@@ -328,6 +351,31 @@ class AugmentationVisualizer(QMainWindow):
         except ValueError:
             QMessageBox.warning(self, "Invalid Input", 
                               "Please enter a valid integer for tree index.")
+
+    def on_ylim_mode_changed(self):
+        use_auto_limits = self.auto_ylim_checkbox.isChecked()
+        self.y_min_edit.setEnabled(not use_auto_limits)
+        self.y_max_edit.setEnabled(not use_auto_limits)
+        self.update_plot()
+
+    def get_y_limits(self, original_boa, augmented_boa):
+        if not self.auto_ylim_checkbox.isChecked():
+            try:
+                y_min = float(self.y_min_edit.text().strip())
+                y_max = float(self.y_max_edit.text().strip())
+            except ValueError:
+                y_min = None
+                y_max = None
+            if y_min is not None and y_max is not None and y_min < y_max:
+                return [y_min, y_max]
+
+        combined_boa = np.concatenate((original_boa, augmented_boa), axis=0)
+        y_min = combined_boa.min()
+        y_max = combined_boa.max()
+        margin = (y_max - y_min) * 0.1
+        if margin == 0:
+            margin = 1.0
+        return [y_min - margin, y_max + margin]
     
     def connect_sliders(self):
         for slider in [
@@ -471,13 +519,8 @@ class AugmentationVisualizer(QMainWindow):
         # Apply grid to spectral plot for easier reading
         self.axes['spec_orig'].grid(True, linestyle='--', alpha=0.7)
         
-        # Set consistent y-axis limits for all plots based on time series data
-        y_min_orig = original_boa.min()
-        y_max_orig = original_boa.max()
-        margin = (y_max_orig - y_min_orig) * 0.1
-        
-        # Apply the same y-limits to all visible plots for better comparison
-        y_limits = [y_min_orig - margin, y_max_orig + margin]
+        # Apply the same y-limits to all visible plots for better comparison.
+        y_limits = self.get_y_limits(original_boa, augmented_boa)
         for key, ax in self.axes.items():
             if key != 'spec_aug':  # Skip the hidden plot
                 ax.set_ylim(y_limits)

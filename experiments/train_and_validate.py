@@ -156,7 +156,11 @@ def train(model_config, data, logdir, experiment_name, version, model_extra_args
             )
 
     mc = SchedulerFreeModelCheckpoint(dirpath=checkpoint_dir, filename="{epoch}-{step}-{val_loss:.4f}", monitor="val_loss", save_last=True, save_top_k=2)
-    callbacks = [LearningRateMonitor(), EarlyStopping(patience=10, monitor="val_loss"), mc]
+    callbacks = [
+        LearningRateMonitor(),
+        EarlyStopping(patience=10, monitor="val_loss", check_on_train_epoch_end=False),
+        mc,
+    ]
 
     trainer_args = {
         "max_steps": 100000,

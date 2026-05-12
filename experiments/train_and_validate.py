@@ -112,7 +112,7 @@ def _build_logged_hparams(model, model_init_args, dataconfig):
 
 
 def train(model_config, data, logdir, experiment_name, version, model_extra_args={}, trainer_extra_args={},
-          experiment_file="", overwrite=True, dataconfig=None):
+          experiment_file="", overwrite=True, dataconfig=None, resume_from_checkpoint=None):
     """Train a model with the given configuration and log details."""
     set_random_seeds()
 
@@ -139,7 +139,7 @@ def train(model_config, data, logdir, experiment_name, version, model_extra_args
 
     logger = TensorBoardLogger(logdir, model_name, version=version)
     logged_hparams = None
-    if dataconfig is not None:
+    if dataconfig is not None and resume_from_checkpoint is None:
         logged_hparams = _build_logged_hparams(model, init_args, dataconfig)
         logger.log_hyperparams(logged_hparams)
         if "augmentation_kwargs" in dataconfig:
@@ -171,7 +171,7 @@ def train(model_config, data, logdir, experiment_name, version, model_extra_args
         callbacks=callbacks,
         enable_progress_bar=False,
         **trainer_args)
-    trainer.fit(model, data)
+    trainer.fit(model, data, ckpt_path=resume_from_checkpoint)
 
     # restore best weights
     state_dict = torch.load(mc.best_model_path, map_location=model.device)["state_dict"]
@@ -373,7 +373,7 @@ def validate(checkpoint_folder, val_ds, return_mode="single", val_years=(2018, 2
 
 def train_and_validate(model_config, data, dataconfig, logdir, experiment_name, version, model_extra_args={},
                        trainer_extra_args={}, experiment_file="", do_validation=True, val_return_mode="single",
-                       val_years=(2018, 2020, 2022), overwrite=True):
+                       val_years=(2018, 2020, 2022), overwrite=True, resume_from_checkpoint=None):
     """Wrapper function to train and validate the model."""
     model, output_folder, _, logger, init_args, logged_hparams = train(
         model_config=model_config,
@@ -386,6 +386,7 @@ def train_and_validate(model_config, data, dataconfig, logdir, experiment_name, 
         experiment_file=experiment_file,
         overwrite=overwrite,
         dataconfig=dataconfig,
+        resume_from_checkpoint=resume_from_checkpoint,
     )
 
     save_classes(output_folder, data.classes)

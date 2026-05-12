@@ -28,6 +28,7 @@ def main():
         "configs/statistics_223_g-5k.yaml",
     )
     max_epochs = os.environ.get("AUGMENTATION_STUDY_MAX_EPOCHS")
+    resume_from_checkpoint = os.environ.get("AUGMENTATION_STUDY_RESUME_FROM")
 
     with open(normalization_config) as f:
         norm_config = yaml.safe_load(f)["data"]
@@ -41,6 +42,8 @@ def main():
 
     print(f"Running augmentation study {run_id + 1}/{len(runs)}: {run['label']}")
     print(yaml.safe_dump(run, sort_keys=False))
+    if resume_from_checkpoint is not None:
+        print(f"Resuming from checkpoint: {resume_from_checkpoint}")
 
     data, dataconfig = load_data(
         dataconfigfile=data_config,
@@ -85,6 +88,7 @@ def main():
         },
         val_return_mode=RETURN_MODE,
         val_years=VAL_YEARS,
+        resume_from_checkpoint=resume_from_checkpoint,
     )
 
 

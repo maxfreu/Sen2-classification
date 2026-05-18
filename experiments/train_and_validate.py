@@ -177,6 +177,10 @@ def train(model_config, data, logdir, experiment_name, version, model_extra_args
         **trainer_args)
     trainer.fit(model, data, ckpt_path=resume_from_checkpoint)
 
+    # Persist the trainer's final in-memory state so last.ckpt reflects the
+    # actual end of training, not just the most recent callback-triggered save.
+    mc._save_checkpoint(trainer, os.path.join(checkpoint_dir, "last.ckpt"))
+
     # restore best weights
     state_dict = torch.load(mc.best_model_path, map_location=model.device)["state_dict"]
     model.load_state_dict(state_dict)

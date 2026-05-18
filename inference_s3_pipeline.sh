@@ -1,12 +1,12 @@
 #! /bin/bash
-#SBATCH --time=01:30:00
+#SBATCH --time=02:30:00
 #SBATCH --partition=kisski
 #SBATCH --account=kisski-hawk-s2treeinference
 #SBATCH --output=slurmlogs/slurm-%A-%a.out
 #SBATCH --error=slurmlogs/slurm-%A-%a.err
 #SBATCH --gpus=4
 #SBATCH --cpus-per-task=48
-#SBATCH --array=0-9%2
+#SBATCH --array=0-9
 #SBATCH -C inet
 
 set -euo pipefail
@@ -20,6 +20,8 @@ YEAR=2025
 NEXT_YEAR=$((YEAR + 1))
 
 S3_PREFIX="s3-force:forst-sentinel2/force/L2/ard"
+# Exclude files containing this substring during S3 copy (keep A/B by default).
+S3_EXCLUDE_SUBSTRING="SEN2C"
 
 MODEL_FOLDER="$HOME/models_final"
 CHECKPOINTS=($(find $MODEL_FOLDER -name "*.ckpt"))
@@ -36,6 +38,7 @@ process_data () {
   GPU_ID=$1
   CUDA_VISIBLE_DEVICES="$GPU_ID" python inference_pipeline.py \
     --s3-prefix "$S3_PREFIX" \
+    --exclude-substring "$S3_EXCLUDE_SUBSTRING" \
     --tiles "${TILES[@]}" \
     --output-folder "$OUTPUT_FOLDER" \
     --checkpoints "${CHECKPOINTS[@]}" \
@@ -46,8 +49,8 @@ process_data () {
     --tmax-data "$NEXT_YEAR-01-01" \
     --soft \
     --num-classes 14 \
-    --parallel-loaders 2 \
-    --parallel-processors 2 \
+    --parallel-loaders 1 \
+    --parallel-processors 1 \
     --queue-size 3 \
     --batch-size 3000 \
     --world-size $((SLURM_ARRAY_TASK_COUNT * 4)) \

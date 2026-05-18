@@ -121,7 +121,8 @@ def cleanup(extracted_dir: str) -> None:
         shutil.rmtree(extracted_dir)
 
 
-def load_data_s3(s3_prefix: str, tile_name: str, temp_dir: str) -> str:
+def load_data_s3(s3_prefix: str, tile_name: str, temp_dir: str,
+                 exclude_substring: Optional[str] = None) -> str:
     """
     Download a tile folder from S3 to a temporary directory using rclone.
     
@@ -129,6 +130,7 @@ def load_data_s3(s3_prefix: str, tile_name: str, temp_dir: str) -> str:
         s3_prefix: S3 prefix, e.g. 's3-force:forst-sentinel2/force/L2/ard'
         tile_name: Tile folder name, e.g. 'X0072_Y0049'
         temp_dir: Path to the temporary directory
+        exclude_substring: Optional substring to exclude from copied filenames
         
     Returns:
         Path to the downloaded directory
@@ -138,10 +140,11 @@ def load_data_s3(s3_prefix: str, tile_name: str, temp_dir: str) -> str:
     os.makedirs(local_dir, exist_ok=True)
     
     print(f"Downloading {s3_path} to {local_dir}")
-    result = subprocess.run(
-        ["rclone", "copy", s3_path, local_dir, "--transfers=8"],
-        capture_output=True, text=True
-    )
+    copy_cmd = ["rclone", "copy", s3_path, local_dir, "--transfers=8"]
+    if exclude_substring:
+        copy_cmd.extend(["--exclude", f"*{exclude_substring}*"])
+
+    result = subprocess.run(copy_cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"rclone copy failed: {result.stderr}")
     
@@ -150,7 +153,8 @@ def load_data_s3(s3_prefix: str, tile_name: str, temp_dir: str) -> str:
 
 def data_loader_worker(items: List[str], temp_dir: str, 
                       data_queue: multiprocessing.Queue, halt_on_error: bool,
-                      s3_prefix: Optional[str] = None) -> None:
+                      s3_prefix: Optional[str] = None,
+                      exclude_substring: Optional[str] = None) -> None:
     """
     Worker function to load data (from tar files or S3) and put the extracted paths into the queue.
     
@@ -160,11 +164,14 @@ def data_loader_worker(items: List[str], temp_dir: str,
         data_queue: Queue to put extracted directory paths
         halt_on_error: Whether to halt on error
         s3_prefix: If set, items are tile names to download from this S3 prefix
+        exclude_substring: Optional substring to exclude from copied filenames
     """
     for item in items:
         try:
             if s3_prefix:
-                extracted_dir = load_data_s3(s3_prefix, item, temp_dir)
+                extracted_dir = load_data_s3(
+                    s3_prefix, item, temp_dir, exclude_substring=exclude_substring
+                )
             else:
                 extracted_dir = load_data(item, temp_dir)
             data_queue.put((item, extracted_dir, None))
@@ -319,6 +326,8 @@ def main():
                         help='Number of parallel data processors')
     parser.add_argument('--queue-size', dest='queue_size', type=int, default=2,
                         help='Maximum size of the queue between loading and processing')
+    parser.add_argument('--exclude-substring', dest='exclude_substring', type=str, default='',
+                        help='Skip copying S3 files whose names contain this substring (e.g. SEN2C)')
     parser.add_argument('--continue-on-error', action='store_true',
                         help='Continue processing if an error occurs')
     parser.add_argument('--world-size', dest='world_size', type=int, default=1,
@@ -472,7 +481,10 @@ def main():
         loader_process = multiprocessing.Process(
             target=data_loader_worker,
             args=(items[start_idx:end_idx], args.temp_dir, data_queue, not args.continue_on_error),
-            kwargs={'s3_prefix': args.s3_prefix if s3_mode else None},
+            kwargs={
+                's3_prefix': args.s3_prefix if s3_mode else None,
+                'exclude_substring': args.exclude_substring or None,
+            },
             name=f"Loader-{i}"
         )
         loader_process.start()

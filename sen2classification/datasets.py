@@ -55,6 +55,7 @@ class InMemoryTimeSeriesDataset(Dataset):
                  where: str = "",
                  append_ndvi: bool = False,
                  eliminate_nodata: bool = False,
+                 input_band_indices=None,
                  mean=np.zeros(10),
                  stddev=np.ones(10) * 10000,
                  ):
@@ -88,6 +89,7 @@ class InMemoryTimeSeriesDataset(Dataset):
             append_ndvi (bool): Whether to append the NDVI to the BOA values. If True, you have to increase the
                 number of satellite channels by one.
             eliminate_nodata: Whether to remove all records where the first BOA band has a value smaller than -5000.
+            input_band_indices: Optional list of BOA band indices to keep after decoding the BLOB.
             mean: Numpy vector representing the band-wise mean of the data. Is used for normalization.
             stddev: Numpy vector representing the band-wise standard deviation of the data. Is used for normalization.
         """
@@ -102,8 +104,9 @@ class InMemoryTimeSeriesDataset(Dataset):
         self.return_mode = return_mode
         self.return_year = return_year
         self.time_encoding = time_encoding
-        self.mean = mean
-        self.stddev = stddev + 1e-7
+        self.input_band_indices = self.normalize_band_indices(input_band_indices)
+        self.mean = np.asarray(mean, dtype=np.float32)
+        self.stddev = np.asarray(stddev, dtype=np.float32) + 1e-7
         self.df = self.load_data(input_filepath, dbname, where, plot_ids)
         self.df = self.df[(self.df.qai & quality_mask) == 0]
 
@@ -124,6 +127,17 @@ class InMemoryTimeSeriesDataset(Dataset):
         # Keep BOA values in one dense matrix and store only row indices in the dataframe.
         raw_boa = self.df.pop("boa")
         self.boa_matrix = self.convert_bytearrays_to_numpy(raw_boa, append_ndvi)
+        if self.input_band_indices is not None:
+            self.validate_band_indices(self.input_band_indices, self.boa_matrix.shape[1])
+            self.boa_matrix = self.boa_matrix[:, self.input_band_indices]
+            self.mean = self.mean[self.input_band_indices]
+            self.stddev = self.stddev[self.input_band_indices]
+
+        if self.boa_matrix.shape[1] != self.satellite_input_channels:
+            raise ValueError(
+                "Decoded BOA channel count does not match satellite_input_channels: "
+                f"{self.boa_matrix.shape[1]} != {self.satellite_input_channels}"
+            )
 
         # throw out all values smaller -5000
         # would be faster to remove all this in the file itself...
@@ -159,6 +173,26 @@ class InMemoryTimeSeriesDataset(Dataset):
             ndvi = np.clip(ndvi, -1, 1)
             boa = np.column_stack((boa, ndvi))
         return boa
+
+    @staticmethod
+    def normalize_band_indices(input_band_indices):
+        if input_band_indices is None:
+            return None
+        return np.array(input_band_indices, dtype=np.int64)
+
+    @staticmethod
+    def validate_band_indices(input_band_indices, num_available_bands):
+        if input_band_indices.ndim != 1:
+            raise ValueError("input_band_indices must be a one-dimensional list of band indices.")
+        if len(input_band_indices) == 0:
+            raise ValueError("input_band_indices must not be empty.")
+        if len(np.unique(input_band_indices)) != len(input_band_indices):
+            raise ValueError(f"input_band_indices contains duplicate entries: {input_band_indices.tolist()}")
+        if input_band_indices.min() < 0 or input_band_indices.max() >= num_available_bands:
+            raise ValueError(
+                f"input_band_indices must be between 0 and {num_available_bands - 1}, "
+                f"received {input_band_indices.tolist()}"
+            )
 
     def load_data(self, input_filepath, dbname, where, plot_ids):
         input_filetype = os.path.splitext(os.path.basename(input_filepath))[1]

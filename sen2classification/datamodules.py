@@ -36,6 +36,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                  val_where: str = "none",
                  append_ndvi: bool = False,
                  eliminate_nodata: bool = False,
+                 input_band_indices=None,
                  pickle_path: str = "/tmp",
                  mean=np.zeros(10),
                  stddev=np.ones(10) * 10000,
@@ -61,6 +62,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
         self.val_where = val_where if val_where != "none" else where
         self.append_ndvi = append_ndvi
         self.eliminate_nodata = eliminate_nodata
+        self.input_band_indices = input_band_indices
         self.pickle_path = pickle_path
         self.mean = np.array(mean)
         self.stddev = np.array(stddev)
@@ -110,6 +112,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                        where=train_where,
                                                        append_ndvi=self.append_ndvi,
                                                        eliminate_nodata=self.eliminate_nodata,
+                                                       input_band_indices=self.input_band_indices,
                                                        plot_ids=self.train_ids,
                                                        mean=self.mean,
                                                        stddev=self.stddev
@@ -129,6 +132,7 @@ class TimeSeriesClassificationDataModule(L.LightningDataModule):
                                                   where=val_where,
                                                   append_ndvi=self.append_ndvi,
                                                   eliminate_nodata=self.eliminate_nodata,
+                                                  input_band_indices=self.input_band_indices,
                                                   plot_ids=self.val_ids,
                                                   mean=self.mean,
                                                   stddev=self.stddev

@@ -126,11 +126,7 @@ def get_best_rows_by_variant(rows, group):
 
 def get_paper_table_rows(rows):
     baseline_row = next((row for row in rows if row["group"] == "baseline"), None)
-    final_rows = [
-        row
-        for row in rows
-        if row["group"] == "final" and row["status"] == "done" and row["metric"] is not None
-    ]
+    default_row = next((row for row in rows if row["group"] == "final"), None)
     best_single_rows = get_best_rows_by_variant(rows, "single")
 
     paper_rows = []
@@ -145,14 +141,14 @@ def get_paper_table_rows(rows):
             }
         )
 
-    for row in final_rows:
+    if default_row is not None:
         paper_rows.append(
             {
-                "variant": row["variant"],
-                "setting": row["setting"],
-                "metric": row["metric"],
-                "kl_div": row["kl_div"],
-                "delta_vs_baseline": row["delta_vs_baseline"],
+                "variant": default_row["variant"],
+                "setting": default_row["setting"],
+                "metric": default_row["metric"],
+                "kl_div": default_row["kl_div"],
+                "delta_vs_baseline": default_row["delta_vs_baseline"],
             }
         )
 
@@ -167,47 +163,27 @@ def get_paper_table_rows(rows):
             }
         )
 
-    return sorted(
-        paper_rows,
-        key=lambda row: (
-            row["delta_vs_baseline"] is None,
-            row["delta_vs_baseline"] if row["delta_vs_baseline"] is not None else float("inf"),
-            row["variant"],
-        ),
-    )
+    return paper_rows
 
 
 def build_latex_table(rows):
-    header = [
-        "Variant",
-        "Acc (\\%)",
-        "$\\Delta$ vs. baseline (pp)",
-        "KL div",
-    ]
-    body_rows = [
-        [
-            escape_latex(row["variant"]),
-            format_percent(row["metric"]),
-            format_delta(row["delta_vs_baseline"]),
-            format_kl_div(row["kl_div"]),
-        ]
-        for row in rows
-    ]
-    widths = [max(len(values[index]) for values in [header, *body_rows]) for index in range(len(header))]
-
-    def format_row(values):
-        padded = [value.ljust(width) for value, width in zip(values, widths)]
-        return " & ".join(padded) + r" \\" 
-
     lines = [
-        "\\begin{tabular}{lrrr}",
+        "\\begin{tabular}{llrrr}",
         "\\hline",
-        format_row(header),
+        "Variant & Best setting & Acc (\\%) & KL div & $\\Delta$ vs. baseline (pp) \\\\",
         "\\hline",
     ]
 
-    for row in body_rows:
-        lines.append(format_row(row))
+    for row in rows:
+        lines.append(
+            "{} & {} & {} & {} & {} \\\\".format(
+                escape_latex(row["variant"]),
+                escape_latex(row["setting"]),
+                format_percent(row["metric"]),
+                format_kl_div(row["kl_div"]),
+                format_delta(row["delta_vs_baseline"]),
+            )
+        )
 
     lines.extend(["\\hline", "\\end{tabular}"])
     return "\n".join(lines)
@@ -216,6 +192,8 @@ def build_latex_table(rows):
 def parse_variant_and_setting(group, label):
     if group == "baseline":
         return "baseline", "none"
+    if group == "final":
+        return "all augmentations", "defaults"
     if label.endswith(")") and " (" in label:
         variant, setting = label.rsplit(" (", 1)
         return variant, setting[:-1]
@@ -229,10 +207,7 @@ def load_run_metadata(run_dir):
 
     group = study_run.get("group", "")
     label = study_run.get("label", run_dir.name)
-    variant = study_run.get("variant")
-    setting = study_run.get("setting")
-    if variant is None or setting is None:
-        variant, setting = parse_variant_and_setting(group, label)
+    variant, setting = parse_variant_and_setting(group, label)
 
     return {
         "id": study_run.get("id"),
@@ -283,14 +258,14 @@ def build_markdown(rows, metric_name, kl_metric_name):
     lines.extend(["", "## Paper Table", ""])
     lines.extend(
         [
-            "| Variant | Acc (%) | Delta vs baseline (pp) | KL div |",
-            "| --- | ---: | ---: | ---: |",
+            "| Variant | Best setting | Acc (%) | KL div | Delta vs baseline (pp) |",
+            "| --- | --- | ---: | ---: | ---: |",
         ]
     )
 
     for row in paper_rows:
         lines.append(
-            f"| {row['variant']} | {format_percent(row['metric'])} | {format_delta(row['delta_vs_baseline'])} | {format_kl_div(row['kl_div'])} |"
+            f"| {row['variant']} | {row['setting']} | {format_percent(row['metric'])} | {format_kl_div(row['kl_div'])} | {format_delta(row['delta_vs_baseline'])} |"
         )
 
     lines.extend([

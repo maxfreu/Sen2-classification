@@ -6,6 +6,15 @@ from pathlib import Path
 import yaml
 
 
+SEASON_DATE_RANGES = {
+    "none": "January 1-December 31",
+    "spring": "March 1-May 31",
+    "summer": "June 1-August 31",
+    "autumn": "September 1-November 30",
+    "winter": "December 1-February 28/29",
+}
+
+
 def parse_metric_value(raw_value):
     try:
         return float(raw_value)
@@ -76,6 +85,7 @@ def load_run_metadata(run_dir):
     return {
         "name": run_dir.name,
         "omitted_season": omitted_season,
+        "date_range": SEASON_DATE_RANGES.get(omitted_season, ""),
         "where": data_config.get("where", ""),
         "val_where": data_config.get("val_where", ""),
     }
@@ -100,6 +110,7 @@ def write_csv(rows, output_path):
             fieldnames=[
                 "name",
                 "omitted_season",
+                "date_range",
                 "where",
                 "val_where",
                 "status",
@@ -120,15 +131,15 @@ def write_csv(rows, output_path):
 def build_latex_table(rows):
     row_end = r"\\"
     lines = [
-        r"\begin{tabular}{lrrrr}",
+        r"\begin{tabular}{llrr}",
         r"\hline",
-        r"Omitted season & Acc (\%) & KL div & $\Delta$ vs. baseline (pp) & Accuracy decline (pp) " + row_end,
+        r"Omitted season & Date range & Acc (\%) & $\Delta$ vs. baseline (pp) " + row_end,
         r"\hline",
     ]
 
     for row in rows:
         lines.append(
-            f"{escape_latex(row['omitted_season'])} & {format_percent(row['metric'])} & {format_kl_div(row['kl_div'])} & {format_delta(row['delta_vs_baseline'])} & {format_decline(row['decline'])} "
+            f"{escape_latex(row['omitted_season'])} & {escape_latex(row['date_range'])} & {format_percent(row['metric'])} & {format_delta(row['delta_vs_baseline'])} "
             + row_end
         )
 
@@ -151,15 +162,16 @@ def build_markdown(rows, metric_name, kl_metric_name):
 
     lines.extend(
         [
-            "| Run | Omitted season | Where | Acc (%) | KL div | Delta vs baseline (pp) | Accuracy decline (pp) | Status |",
-            "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+            "| Run | Omitted season | Date range | Where | Acc (%) | KL div | Delta vs baseline (pp) | Accuracy decline (pp) | Status |",
+            "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
         ]
     )
     for row in rows:
         lines.append(
-            "| {name} | {omitted_season} | {where} | {acc} | {kl_div} | {delta} | {decline} | {status} |".format(
+            "| {name} | {omitted_season} | {date_range} | {where} | {acc} | {kl_div} | {delta} | {decline} | {status} |".format(
                 name=row["name"],
                 omitted_season=row["omitted_season"],
+                date_range=row["date_range"],
                 where=row["where"],
                 acc=format_percent(row["metric"]),
                 kl_div=format_kl_div(row["kl_div"]),
@@ -174,13 +186,13 @@ def build_markdown(rows, metric_name, kl_metric_name):
             "",
             "## Sorted Comparison",
             "",
-            "| Omitted season | Acc (%) | KL div | Delta vs baseline (pp) | Accuracy decline (pp) |",
-            "| --- | ---: | ---: | ---: | ---: |",
+            "| Omitted season | Date range | Acc (%) | KL div | Delta vs baseline (pp) | Accuracy decline (pp) |",
+            "| --- | --- | ---: | ---: | ---: | ---: |",
         ]
     )
     for row in comparison_rows:
         lines.append(
-            f"| {row['omitted_season']} | {format_percent(row['metric'])} | {format_kl_div(row['kl_div'])} | {format_delta(row['delta_vs_baseline'])} | {format_decline(row['decline'])} |"
+            f"| {row['omitted_season']} | {row['date_range']} | {format_percent(row['metric'])} | {format_kl_div(row['kl_div'])} | {format_delta(row['delta_vs_baseline'])} | {format_decline(row['decline'])} |"
         )
 
     lines.extend(["", "## LaTeX Table", "", "```latex", build_latex_table(comparison_rows), "```"])
@@ -221,6 +233,7 @@ def main():
             {
                 "name": run["name"],
                 "omitted_season": run["omitted_season"],
+                "date_range": run["date_range"],
                 "where": run["where"],
                 "val_where": run["val_where"],
                 "status": status,

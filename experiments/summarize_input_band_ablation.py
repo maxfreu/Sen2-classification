@@ -1,8 +1,10 @@
 import argparse
 import ast
 import csv
+import math
 from pathlib import Path
 
+import duckdb
 import yaml
 
 
@@ -25,6 +27,45 @@ def parse_report(report_path):
         if key != "Years":
             metrics[key] = parse_metric_value(value)
     return metrics
+
+
+def kl_divergence(pred_counts, true_counts):
+    labels = sorted(set(pred_counts) | set(true_counts))
+    pred_values = [pred_counts.get(label, 0.0) + 1e-7 for label in labels]
+    true_values = [true_counts.get(label, 0.0) + 1e-7 for label in labels]
+    pred_total = sum(pred_values)
+    true_total = sum(true_values)
+    return sum(
+        (pred_value / pred_total) * math.log((pred_value / pred_total) / (true_value / true_total))
+        for pred_value, true_value in zip(pred_values, true_values)
+    )
+
+
+def parse_prediction_metrics(eval_dir, seq_len):
+    prediction_paths = sorted(eval_dir.glob(f"prediction_seq_len={seq_len}_year=*.sqlite"))
+    if not prediction_paths:
+        return None, None
+
+    accuracies = []
+    kl_divs = []
+    for prediction_path in prediction_paths:
+        accuracy = duckdb.query(
+            f"SELECT avg(correct) FROM sqlite_scan('{prediction_path}', 'val')"
+        ).fetchone()[0]
+        true_counts = dict(
+            duckdb.query(
+                f"SELECT y_true, count(*) FROM sqlite_scan('{prediction_path}', 'val') GROUP BY y_true"
+            ).fetchall()
+        )
+        pred_counts = dict(
+            duckdb.query(
+                f"SELECT y_pred, count(*) FROM sqlite_scan('{prediction_path}', 'val') GROUP BY y_pred"
+            ).fetchall()
+        )
+        accuracies.append(accuracy)
+        kl_divs.append(kl_divergence(pred_counts, true_counts))
+
+    return sum(accuracies) / len(accuracies), sum(kl_divs) / len(kl_divs)
 
 
 def iter_run_directories(output_root, experiment_name):
@@ -119,15 +160,15 @@ def write_csv(rows, output_path):
 def build_latex_table(rows):
     row_end = r"\\"
     lines = [
-        r"\begin{tabular}{lrrrr}",
+        r"\begin{tabular}{lrr}",
         r"\hline",
-        r"Omitted band & Acc (\%) & KL div & $\Delta$ vs. baseline (pp) & Accuracy decline (pp) " + row_end,
+        r"Omitted band & Acc (\%) & $\Delta$ vs. baseline (pp) " + row_end,
         r"\hline",
     ]
 
     for row in rows:
         lines.append(
-            f"{escape_latex(row['omitted_band'])} & {format_percent(row['metric'])} & {format_kl_div(row['kl_div'])} & {format_delta(row['delta_vs_baseline'])} & {format_decline(row['decline'])} "
+            f"{escape_latex(row['omitted_band'])} & {format_percent(row['metric'])} & {format_delta(row['delta_vs_baseline'])} "
             + row_end
         )
 
@@ -192,6 +233,7 @@ def main():
     parser.add_argument("--experiment-name", default="input_band_ablation")
     parser.add_argument("--metric", default="acc_ds_avg_seq_len=64")
     parser.add_argument("--kl-metric", default="kl_div_ds_avg_seq_len=64")
+    parser.add_argument("--seq-len", type=int, default=64)
     parser.add_argument("--output-prefix", default=None)
     args = parser.parse_args()
 
@@ -212,6 +254,11 @@ def main():
             metric_value = report_metrics.get(args.metric)
             kl_div_value = report_metrics.get(args.kl_metric)
             status = "done" if metric_value is not None else "missing-metric"
+
+        if metric_value is None:
+            metric_value, kl_div_value = parse_prediction_metrics(run_dir / "eval", args.seq_len)
+            if metric_value is not None:
+                status = "done-from-predictions"
 
         if run["omitted_band"] == "none":
             baseline_metric = metric_value
